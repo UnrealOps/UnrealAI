@@ -55,6 +55,25 @@ def validate_configuration(errors: list[str]) -> None:
     if config.get("include-component-in-tag") is not False or config.get("include-v-in-tag") is not True:
         add_error(errors, "Release tags must use the v<VersionName> format without a component prefix.")
 
+    changelog_sections = config.get("changelog-sections")
+    sections_by_type = (
+        {
+            section.get("type"): section
+            for section in changelog_sections
+            if isinstance(section, dict)
+        }
+        if isinstance(changelog_sections, list)
+        else {}
+    )
+    for visible_type in ("feat", "fix", "perf", "revert"):
+        section = sections_by_type.get(visible_type)
+        if not isinstance(section, dict) or section.get("hidden") is True:
+            add_error(errors, f"Release changelog section {visible_type} must remain visible.")
+    for hidden_type in ("docs", "build", "ci", "refactor", "test", "chore"):
+        section = sections_by_type.get(hidden_type)
+        if not isinstance(section, dict) or section.get("hidden") is not True:
+            add_error(errors, f"Release changelog section {hidden_type} must remain hidden by default.")
+
     packages = config.get("packages")
     package = packages.get(".") if isinstance(packages, dict) else None
     if not isinstance(package, dict):
