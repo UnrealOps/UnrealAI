@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = Path(
+    os.environ.get("UNREALAI_REPOSITORY_ROOT", Path(__file__).resolve().parents[2])
+).resolve()
 SKILLS_ROOT = REPOSITORY_ROOT / ".agents" / "skills"
 PUBLIC_SOURCE = "\n".join(
     path.read_text(encoding="utf-8")

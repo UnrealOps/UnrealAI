@@ -267,6 +267,7 @@ Use `--platform Win64` on Windows or `--platform Linux` on Linux. The GitHub Act
 
 - [Plugin configuration and advanced usage](Documentation/README.md)
 - [Continuous integration](Documentation/ContinuousIntegration.md)
+- [Changelog](CHANGELOG.md)
 - [Example environment variables](.env.example)
 
 ## 🤝 Contributing
