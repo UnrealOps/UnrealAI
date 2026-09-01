@@ -18,6 +18,7 @@ Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API 
 - [C++ usage](#-c-usage)
 - [Provider configuration](#-provider-configuration)
 - [Features and roadmap](#-features-and-roadmap)
+- [Agent skills](#-agent-skills)
 - [Validation](#-validation)
 - [Documentation](#-documentation)
 - [Contributing](#-contributing)
@@ -235,12 +236,22 @@ Custom profiles can target other OpenAI-compatible providers or local gateways. 
 | Image, audio, and embedding helpers | Planned |
 | Built-in retry and backoff policy | Planned |
 
+## 🤖 Agent skills
+
+Repository-local skills give coding agents the current UnrealAI integration rules and examples:
+
+- [`$unrealai-cpp`](.agents/skills/unrealai-cpp/SKILL.md) — implement or review native C++ integrations.
+- [`$unrealai-blueprints`](.agents/skills/unrealai-blueprints/SKILL.md) — design or review Blueprint chat flows.
+
+Both skills keep automatic discovery enabled and route detailed work to focused references under their skill directories.
+
 ## ✅ Validation
 
 Run portable repository checks without installing Unreal Engine:
 
 ```bash
 python3 Scripts/ci/validate_plugin.py
+python3 Scripts/ci/validate_skills.py
 ```
 
 With a native Unreal Engine installation available, package the plugin and run its automation tests:
