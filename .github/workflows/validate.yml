@@ -27,6 +27,9 @@ jobs:
       - name: Validate plugin layout, descriptor, and repository hygiene
         run: python3 Scripts/ci/validate_plugin.py
 
+      - name: Validate repository-local agent skills
+        run: python3 Scripts/ci/validate_skills.py
+
       - name: Compile CI Python scripts
         env:
           PYTHONDONTWRITEBYTECODE: "1"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "UnrealAI Blueprints"
+  short_description: "Build UnrealAI flows with Blueprints"
+  default_prompt: "Use $unrealai-blueprints to add an UnrealAI chat flow to this Blueprint."
