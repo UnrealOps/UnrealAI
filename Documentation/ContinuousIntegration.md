@@ -29,6 +29,21 @@ The workflow has read-only repository permissions, disables persisted checkout c
 
 This workflow is manual because standard GitHub-hosted runners do not include the licensed, very large Unreal Engine toolchain, and GitHub warns against automatically running public pull-request code on persistent self-hosted runners.
 
+### Release
+
+`.github/workflows/release.yml` runs after changes reach `main` and uses Release Please in manifest mode:
+
+1. Conventional Commits since the previous release determine the next semantic version.
+2. The workflow creates or updates a release pull request containing `CHANGELOG.md`, `version.txt`, `.release-please-manifest.json`, and the new `UnrealAI.uplugin` `VersionName`.
+3. A repository script keeps Unreal's positive integer `Version` at `1` for the initial `0.1.0` release and increments it exactly once for each later semantic release.
+4. Merging the generated release pull request creates the `v<VersionName>` Git tag and a published GitHub Release using the generated changelog entry.
+
+The first generated release is bootstrapped as `v0.1.0`. Before `1.0.0`, a breaking Conventional Commit increments the minor version; features increment minor, and fixes increment patch. Documentation and maintenance commits can appear in a changelog alongside a releasable change but do not create a release by themselves.
+
+The workflow requests only `contents: write`, `issues: write`, and `pull-requests: write`, uses a concurrency lock, and pins third-party actions to complete commit SHAs. Candidate branches are treated as data: version synchronization and validation execute scripts loaded from trusted `main`, not code from the generated branch. In **Settings → Actions → General**, allow GitHub Actions to create pull requests. The built-in `GITHUB_TOKEN` is sufficient for release management, but GitHub intentionally prevents events created by that token from starting other workflows. If branch protection requires normal CI checks on the generated release pull request, configure a fine-grained `RELEASE_PLEASE_TOKEN` secret with repository contents, issues, and pull-request access; the workflow uses it when present and otherwise falls back to `GITHUB_TOKEN`.
+
+Prefer squash merges with a Conventional Commit-formatted pull request title. Release Please uses the final commits on `main` to calculate both the version and changelog. Do not manually edit the automation-owned manifest, `version.txt`, or changelog during ordinary development.
+
 ## Runner setup
 
 1. Register one native self-hosted runner for each desired platform in a restricted organization runner group.
@@ -48,6 +63,8 @@ Portable validation:
 
 ```bash
 python3 Scripts/ci/validate_plugin.py
+python3 Scripts/ci/validate_skills.py
+python3 Scripts/ci/validate_release.py
 actionlint
 python3 -m compileall -q Scripts/ci
 ```

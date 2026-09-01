@@ -23,7 +23,11 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 | `.agents/skills/` | Source-grounded C++ and Blueprint instructions for coding agents |
 | `Scripts/ci/` | Portable validation, native packaging, and automation-report checks |
 | `Tests/HostProject/` | Minimal project used to load and test the packaged plugin |
-| `.github/workflows/` | Hosted source checks and native self-hosted runner matrix |
+| `.github/workflows/` | Hosted source checks, release automation, and native self-hosted runner matrix |
+| `release-please-config.json` | Conventional Commit release, changelog, and tag policy |
+| `.release-please-manifest.json` | Automation-owned record of the last released version |
+| `version.txt` | Automation-owned SemVer mirror used by the release strategy |
+| `CHANGELOG.md` | Automation-owned release notes shipped with the plugin |
 
 Never edit or commit generated `Binaries/`, `DerivedDataCache/`, `Intermediate/`, `Saved/`, Python bytecode, IDE output, or native CI package output.
 
@@ -35,7 +39,7 @@ Never edit or commit generated `Binaries/`, `DerivedDataCache/`, `Intermediate/`
 4. Keep automated tests deterministic, offline, and independent of provider credentials.
 5. Run validation proportional to the change and report the exact native host platform exercised.
 6. Review the final diff for generated output, personal paths, secrets, stale identifiers, and accidental scope expansion.
-7. Do not create releases, tags, or history-rewriting commits unless explicitly requested.
+7. Do not create releases, tags, or history-rewriting commits manually unless explicitly requested. Let the release workflow own normal tags and GitHub Releases.
 
 When working in a consuming Unreal project, use `.agents/skills/unrealai-cpp` for native integrations and `.agents/skills/unrealai-blueprints` for Blueprint flows. The current checkout's public headers remain authoritative.
 
@@ -86,6 +90,7 @@ Use a Python 3 launcher appropriate for the host (`python3`, `python`, or `py -3
 ```text
 <python> Scripts/ci/validate_plugin.py
 <python> Scripts/ci/validate_skills.py
+<python> Scripts/ci/validate_release.py
 actionlint
 ```
 
@@ -101,6 +106,7 @@ Validation expectations:
 - Skill changes: both portable validators and the upstream skill schema validator when available.
 - Runtime or public API changes: strict native plugin packaging plus all `UnrealAI.*` automation tests.
 - Workflow changes: portable validators and `actionlint`.
+- Release automation changes: all three portable validators, synchronizer contract tests, and a Release Please dry run when available.
 - Provider defaults or Blueprint exposure changes: add or update a native source-of-truth assertion.
 
 Automation test IDs use `UnrealAI.<Area>.<Behavior>`. Add focused regression coverage for behavior changes. Reflection tests should protect documented Blueprint node names, callability, purity, and assignable delegates when those surfaces matter.
@@ -135,18 +141,28 @@ Allowed types:
 - `chore`: maintenance that fits no other type
 - `revert`: revert of an earlier commit
 
-Keep the subject concise, imperative, lowercase after the colon, and without a trailing period. Use a scope such as `http`, `blueprint`, `settings`, `ci`, or `docs` only when it adds useful precision. Add a body for motivation, tradeoffs, or migration details. Mark breaking changes with `!` and a `BREAKING CHANGE:` footer.
+Keep the subject concise, imperative, and without a trailing period. Start lowercase unless the first word is a proper project or API name. Use a scope such as `http`, `blueprint`, `settings`, `ci`, or `docs` only when it adds useful precision. Add a body for motivation, tradeoffs, or migration details. Mark breaking changes with `!` and a `BREAKING CHANGE:` footer.
 
-Keep commits focused and independently understandable. Pull requests should summarize behavior and risk, identify public API, config, packaging, cross-platform, or security impacts, and list exact validation commands and results. Include Blueprint or editor images when a visual surface changes.
+Keep commits focused and independently understandable. Prefer squash-merging pull requests so the final commit on `main` carries the intended Conventional Commit type and produces a clean changelog entry. Pull requests should summarize behavior and risk, identify public API, config, packaging, cross-platform, or security impacts, and list exact validation commands and results. Include Blueprint or editor images when a visual surface changes.
 
 ## Semantic Versioning and Releases
 
-`UnrealAI.uplugin` contains both release fields:
+`UnrealAI.uplugin` contains both runtime release fields:
 
 - `VersionName` is the SemVer value without the tag prefix, initially `0.1.0`.
 - `Version` is a positive, monotonically increasing Unreal integer, initially `1`.
 
 Release tags use `v<VersionName>`, for example `v0.1.0`. Do not add the `v` prefix inside `UnrealAI.uplugin`.
+
+Release Please owns normal version selection and changelog generation:
+
+1. A Conventional Commit reaches `main`.
+2. `.github/workflows/release.yml` creates or updates a release pull request.
+3. The release pull request updates `CHANGELOG.md`, `version.txt`, `.release-please-manifest.json`, and `UnrealAI.uplugin`.
+4. `Scripts/ci/sync_release_version.py` increments Unreal's integer `Version` once per new semantic release.
+5. Merging the release pull request creates the matching `v<VersionName>` tag and published GitHub Release.
+
+Do not manually edit `CHANGELOG.md`, `version.txt`, or `.release-please-manifest.json` during ordinary development. Do not manually bump `UnrealAI.uplugin` for a normal release; review the generated release pull request instead.
 
 Choose the next version from user-visible impact:
 
@@ -156,4 +172,4 @@ Choose the next version from user-visible impact:
 - Starting with `1.0.0`, increment `MAJOR` for a breaking public API change.
 - Documentation, tests, CI, refactors, build maintenance, and chores do not require a release by themselves unless they change the distributed artifact or user-visible behavior.
 
-For a release, update `VersionName` and increment `Version` in the same focused release change, validate the packaged plugin, and create the matching `v<VersionName>` tag only after the exact release commit is approved. The highest-impact commit since the previous release determines the version increment.
+The highest-impact Conventional Commit since the previous release determines the version increment. Review and merge the generated release pull request only after its version, changelog, descriptor fields, and required validation are correct.

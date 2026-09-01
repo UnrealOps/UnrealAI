@@ -30,6 +30,9 @@ jobs:
       - name: Validate repository-local agent skills
         run: python3 Scripts/ci/validate_skills.py
 
+      - name: Validate release automation
+        run: python3 Scripts/ci/validate_release.py
+
       - name: Compile CI Python scripts
         env:
           PYTHONDONTWRITEBYTECODE: "1"

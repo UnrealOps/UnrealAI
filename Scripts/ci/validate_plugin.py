@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = Path(
+    os.environ.get("UNREALAI_REPOSITORY_ROOT", Path(__file__).resolve().parents[2])
+).resolve()
 DESCRIPTOR_PATH = REPOSITORY_ROOT / "UnrealAI.uplugin"
 GENERATED_DIRECTORIES = {"Binaries", "DerivedDataCache", "Intermediate", "Saved"}
 CREDENTIAL_FILENAMES = {
