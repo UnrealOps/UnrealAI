@@ -208,7 +208,7 @@ UnrealAI includes these profiles by default:
 | Provider | Base URL | Default model | API key variable |
 | --- | --- | --- | --- |
 | OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
-| xAI | `https://api.x.ai/v1` | `grok-4.3` | `XAI_API_KEY` |
+| xAI | `https://api.x.ai/v1` | `grok-4.6` | `XAI_API_KEY` |
 
 Manage profiles under **Project Settings → Plugins → UnrealAI**. Each profile can define its base URL, model, authentication variable, timeout, and additional HTTP headers.
 

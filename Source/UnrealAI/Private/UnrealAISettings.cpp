@@ -92,7 +92,7 @@ UUnrealAISettings::UUnrealAISettings()
 		XAIProvider.Name = TEXT("XAI");
 		XAIProvider.BaseUrl = TEXT("https://api.x.ai/v1");
 		XAIProvider.BaseUrlEnvironmentVariable = TEXT("OPENAI_BASE_URL");
-		XAIProvider.DefaultModel = TEXT("grok-4.3");
+		XAIProvider.DefaultModel = TEXT("grok-4.6");
 		XAIProvider.ModelEnvironmentVariable = TEXT("OPENAI_MODEL");
 		XAIProvider.ApiKeyEnvironmentVariable = TEXT("XAI_API_KEY");
 		XAIProvider.TimeoutSeconds = 3600.0f;

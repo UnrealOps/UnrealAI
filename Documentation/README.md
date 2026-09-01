@@ -12,7 +12,7 @@ The SDK starts with the portable Chat Completions contract:
 The plugin is provider-neutral. The default profiles are:
 
 - `OpenAI`: `https://api.openai.com/v1`, model `gpt-5.6-luna`, key env var `OPENAI_API_KEY`
-- `XAI`: `https://api.x.ai/v1`, model `grok-4.3`, key env var `XAI_API_KEY`
+- `XAI`: `https://api.x.ai/v1`, model `grok-4.6`, key env var `XAI_API_KEY`
 
 Both default profiles also support `OPENAI_BASE_URL` and `OPENAI_MODEL` as environment overrides.
 
@@ -49,7 +49,7 @@ cp Plugins/UnrealAI/.env.example .env
 ```env
 XAI_API_KEY=...
 OPENAI_BASE_URL=https://api.x.ai/v1
-OPENAI_MODEL=grok-4.3
+OPENAI_MODEL=grok-4.6
 ```
 
 The `.env` loader only sets variables that are not already present in the editor process environment. Use `Reload Project Env File` from Blueprint to force a reload during editor testing.

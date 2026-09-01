@@ -63,7 +63,7 @@ Provider profiles live under **Project Settings → Plugins → UnrealAI**. The 
 | Profile name | Default model | API key environment variable |
 | --- | --- | --- |
 | `OpenAI` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
-| `XAI` | `grok-4.3` | `XAI_API_KEY` |
+| `XAI` | `grok-4.6` | `XAI_API_KEY` |
 
 For local editor development, copy `.env.example` to `.env` in the consuming project root. Process environment variables take precedence. Never put a real key into a Blueprint asset, screenshot, source-controlled setting, or packaged client.
 

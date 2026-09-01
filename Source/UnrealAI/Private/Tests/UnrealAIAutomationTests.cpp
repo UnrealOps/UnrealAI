@@ -80,6 +80,7 @@ bool FUnrealAIDefaultProvidersTest::RunTest(const FString& Parameters)
 	if (XAIProvider)
 	{
 		TestEqual(TEXT("The xAI base URL is correct"), XAIProvider->BaseUrl, FString(TEXT("https://api.x.ai/v1")));
+		TestEqual(TEXT("The xAI model is correct"), XAIProvider->DefaultModel, FString(TEXT("grok-4.6")));
 		TestEqual(TEXT("The xAI API key environment variable is correct"), XAIProvider->ApiKeyEnvironmentVariable, FString(TEXT("XAI_API_KEY")));
 		TestTrue(TEXT("The xAI profile contains no API key override"), XAIProvider->ApiKeyOverride.IsEmpty());
 	}

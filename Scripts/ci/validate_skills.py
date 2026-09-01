@@ -206,7 +206,7 @@ def validate_shared_api_claims(errors: list[str]) -> None:
         "OPENAI_API_KEY",
         "XAI",
         "https://api.x.ai/v1",
-        "grok-4.3",
+        "grok-4.6",
         "XAI_API_KEY",
     }
     for source_value in settings_contract:
