@@ -8,7 +8,7 @@ UnrealAI uses two CI tiers so that inexpensive checks run on every change while 
 
 `.github/workflows/validate.yml` runs on every push and pull request using a GitHub-hosted Ubuntu runner. It:
 
-- validates `UnrealAI.uplugin` and its declared module layout;
+- validates `UnrealAI.uplugin`, its declared module layout, a positive integer `Version`, and a SemVer-compliant `VersionName`;
 - rejects committed Unreal-generated output, local `.env` files, common credential formats, personal filesystem paths, stale pre-rename identifiers, conflict markers, and trailing whitespace;
 - checks that `.env.example` has no populated secret values;
 - lints GitHub Actions workflows with `actionlint`;

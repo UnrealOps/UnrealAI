@@ -38,6 +38,14 @@ PERSONAL_PATH_PATTERN = re.compile(
 )
 CONFLICT_MARKER_PATTERN = re.compile(r"^(?:<{7}|={7}|>{7})(?:\s|$)")
 STALE_IDENTIFIERS = ("OpenAICompat" + "AI",)
+SEMVER_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\."
+    r"(?:0|[1-9]\d*)\."
+    r"(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 def add_error(errors: list[str], message: str) -> None:
@@ -69,6 +77,14 @@ def validate_descriptor(errors: list[str]) -> None:
 
     if descriptor.get("FileVersion") != 3:
         add_error(errors, "UnrealAI.uplugin must use FileVersion 3.")
+
+    version = descriptor.get("Version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        add_error(errors, "UnrealAI.uplugin Version must be a positive integer.")
+
+    version_name = descriptor.get("VersionName")
+    if not isinstance(version_name, str) or not SEMVER_PATTERN.fullmatch(version_name):
+        add_error(errors, "UnrealAI.uplugin VersionName must be a semantic version without a v prefix.")
 
     modules = descriptor.get("Modules")
     if not isinstance(modules, list) or not modules:
