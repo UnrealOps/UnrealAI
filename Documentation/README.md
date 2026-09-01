@@ -137,3 +137,5 @@ Not yet implemented:
 - Responses API abstraction
 - Image/audio/embedding convenience wrappers
 - Retry/backoff policy
+
+See [why the planned capabilities matter](../README.md#why-the-planned-capabilities-matter) for the product need and implementation boundary of each roadmap item.

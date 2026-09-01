@@ -236,6 +236,13 @@ Custom profiles can target other OpenAI-compatible providers or local gateways. 
 | Image, audio, and embedding helpers | Planned |
 | Built-in retry and backoff policy | Planned |
 
+### Why the planned capabilities matter
+
+- **SSE streaming** — A non-streaming request delivers nothing until the provider finishes the entire response. Streaming is required for responsive dialogue, progressive UI updates, and cancellation during long generations. The implementation needs an incremental SSE parser that tolerates events split across HTTP chunks, plus partial, completed, cancelled, and failed callbacks that behave consistently in C++ and Blueprints.
+- **Responses API abstraction** — Chat Completions is only one provider interaction shape, and forcing newer item- or event-based workflows through chat messages and raw JSON would leak endpoint details into gameplay code. A separate abstraction is required to represent inputs, outputs, tool activity, and provider events without breaking the existing Chat Completions API or sacrificing provider neutrality.
+- **Image, audio, and embedding helpers** — Raw JSON extension fields can carry provider-specific data, but they do not validate formats or manage binary data and Unreal-friendly types. Typed helpers are required to make multimodal input, generated media, transcription or speech results, and embedding vectors practical from both C++ and Blueprints while handling MIME types, URLs, encoded data, memory, and asynchronous conversion safely.
+- **Built-in retry and backoff policy** — Rate limits, temporary server failures, and network interruptions are normal production conditions. A shared policy is required so every gameplay system does not implement its own retry loop. It should honor `Retry-After`, use bounded exponential backoff with jitter, remain cancellable, and retry only transient failures—not authentication, validation, or other permanent errors.
+
 ## 🤖 Agent skills
 
 Repository-local skills give coding agents the current UnrealAI integration rules and examples:
