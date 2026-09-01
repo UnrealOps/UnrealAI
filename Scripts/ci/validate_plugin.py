@@ -56,7 +56,8 @@ def repository_files(errors: list[str]) -> list[Path]:
         add_error(errors, f"Unable to enumerate Git files: {exc}")
         return []
 
-    return [REPOSITORY_ROOT / path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
+    files = [REPOSITORY_ROOT / path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
+    return [path for path in files if path.is_file()]
 
 
 def validate_descriptor(errors: list[str]) -> None:

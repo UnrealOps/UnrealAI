@@ -18,10 +18,10 @@ The workflow has read-only repository permissions, disables persisted checkout c
 
 ### Unreal Engine
 
-`.github/workflows/unreal-engine.yml` is manually dispatched and targets a self-hosted macOS runner with the `unreal-engine` label. It:
+`.github/workflows/unreal-engine.yml` is manually dispatched and runs a native-host matrix on self-hosted macOS, Windows, and Linux runners with the `unreal-engine` label. Each matrix job:
 
 1. runs the same portable validation;
-2. packages the plugin with `RunUAT.sh BuildPlugin -Rocket -StrictIncludes`;
+2. packages the plugin for `Mac`, `Win64`, or `Linux` with `BuildPlugin -Rocket -StrictIncludes`;
 3. installs the packaged result into a temporary host project;
 4. runs the `UnrealAI.*` native automation tests headlessly with `UnrealEditor-Cmd` and `-NullRHI`;
 5. parses the exported `index.json` report to make failures and incomplete tests fail the job;
@@ -31,15 +31,16 @@ This workflow is manual because standard GitHub-hosted runners do not include th
 
 ## Runner setup
 
-1. Register a macOS self-hosted runner for the repository or a restricted organization runner group.
-2. Add the custom runner label `unreal-engine`.
-3. Install the supported Unreal Engine version and the matching Xcode toolchain.
-4. Add a repository Actions variable named `UNREAL_ENGINE_ROOT` whose value is the Unreal Engine root directory. This is a path, not a secret.
-5. Run the `Unreal Engine` workflow from the Actions tab.
+1. Register one native self-hosted runner for each desired platform in a restricted organization runner group.
+2. Keep each runner's automatic OS label (`macos`, `windows`, or `linux`) and add the custom label `unreal-engine`.
+3. Install the same supported Unreal Engine release on every runner, plus Xcode on macOS, Visual Studio with the C++ workload on Windows, and Unreal's required Clang/toolchain packages on Linux. Install `xvfb-run` on headless Linux runners.
+4. Create the GitHub environments `unreal-macos`, `unreal-windows`, and `unreal-linux`.
+5. In each environment, add an Actions variable named `UNREAL_ENGINE_ROOT` containing that runner's platform-specific Unreal Engine root directory. This path is not a secret.
+6. Run the `Unreal Engine` workflow from the Actions tab.
 
 Do not configure API keys on this runner for compilation or unit tests; UnrealAI's current tests are intentionally offline.
 
-For a public repository, keep the engine workflow manual and restrict who can dispatch it. For broader platform or engine-version coverage, use isolated or ephemeral runners with distinct labels and run `BuildPlugin` once per supported engine/platform combination.
+For a public repository, keep the engine workflow manual and restrict who can dispatch it. Prefer isolated or ephemeral runners, especially when expanding to pull-request execution. Add engine-version labels or runner groups when the project begins supporting multiple Unreal Engine releases.
 
 ## Local commands
 
@@ -48,14 +49,16 @@ Portable validation:
 ```bash
 python3 Scripts/ci/validate_plugin.py
 actionlint
-shellcheck Scripts/ci/*.sh
+python3 -m compileall -q Scripts/ci
 ```
 
-macOS package and native automation test:
+Native package and automation test:
 
 ```bash
-UNREAL_ENGINE_ROOT=/path/to/UnrealEngine Scripts/ci/run-unreal-ci.sh
+UNREAL_ENGINE_ROOT=/path/to/UnrealEngine python3 Scripts/ci/run_unreal_ci.py --platform Mac
 ```
+
+Use `--platform Win64` on Windows or `--platform Linux` on Linux. The driver selects the correct `RunUAT` launcher and `UnrealEditor-Cmd` executable for the host operating system.
 
 Set `UNREAL_CI_OUTPUT_DIR` to an empty directory when the package and report should be retained at a known location.
 
