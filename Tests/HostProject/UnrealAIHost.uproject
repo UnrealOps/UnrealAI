@@ -1,0 +1,12 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "",
+  "Category": "Tests",
+  "Description": "Minimal host project for UnrealAI automation tests.",
+  "Plugins": [
+    {
+      "Name": "UnrealAI",
+      "Enabled": true
+    }
+  ]
+}

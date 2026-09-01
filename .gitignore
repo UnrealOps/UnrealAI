@@ -1,0 +1,32 @@
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+.envrc
+
+# Unreal Engine generated output
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Generated build metadata and logs
+*.log
+*.modules
+*.target
+*.version
+compile_commands.json
+
+# Python validation-script output
+__pycache__/
+*.py[cod]
+
+# IDE and platform-generated files
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
