@@ -13,8 +13,10 @@ Run the portable repository checks without installing Unreal Engine:
 python3 Scripts/ci/validate_plugin.py
 ```
 
-With a macOS Unreal Engine installation available, package the plugin and run its native automation tests:
+With a native Unreal Engine installation available, package the plugin and run its automation tests for the current host platform:
 
 ```bash
-UNREAL_ENGINE_ROOT=/path/to/UnrealEngine Scripts/ci/run-unreal-ci.sh
+UNREAL_ENGINE_ROOT=/path/to/UnrealEngine python3 Scripts/ci/run_unreal_ci.py --platform Mac
 ```
+
+Use `Win64` on Windows or `Linux` on Linux.
