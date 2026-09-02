@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"Version": 1,
+	"Version": 2,
 	"VersionName": "0.2.0",
 	"FriendlyName": "UnrealAI",
 	"Description": "Provider-neutral Unreal Engine SDK for OpenAI, xAI, Anthropic, Gemini, and compatible APIs.",
