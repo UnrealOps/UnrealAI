@@ -1,0 +1,74 @@
+name: Unreal Engine
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unreal-engine-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-test:
+    name: Package and test (${{ matrix.display_name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - display_name: macOS
+            runner_label: macos
+            target_platform: Mac
+            environment_name: unreal-macos
+          - display_name: Windows
+            runner_label: windows
+            target_platform: Win64
+            environment_name: unreal-windows
+          - display_name: Linux
+            runner_label: linux
+            target_platform: Linux
+            environment_name: unreal-linux
+
+    runs-on: [self-hosted, "${{ matrix.runner_label }}", unreal-engine]
+    environment: ${{ matrix.environment_name }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate plugin source
+        run: python Scripts/ci/validate_plugin.py
+
+      - name: Package plugin and run Unreal automation tests
+        env:
+          UNREAL_ENGINE_ROOT: ${{ vars.UNREAL_ENGINE_ROOT }}
+          UNREAL_CI_OUTPUT_DIR: ${{ runner.temp }}/UnrealAI-CI
+        run: python Scripts/ci/run_unreal_ci.py --platform "${{ matrix.target_platform }}"
+
+      - name: Upload packaged plugin
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: UnrealAI-${{ matrix.display_name }}
+          path: ${{ runner.temp }}/UnrealAI-CI/Package
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload automation report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: UnrealAI-automation-report-${{ matrix.display_name }}
+          path: ${{ runner.temp }}/UnrealAI-CI/AutomationReport
+          if-no-files-found: warn
+          retention-days: 7

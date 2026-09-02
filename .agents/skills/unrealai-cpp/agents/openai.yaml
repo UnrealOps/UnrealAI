@@ -1,0 +1,4 @@
+interface:
+  display_name: "UnrealAI C++ SDK"
+  short_description: "Build UnrealAI integrations with native C++"
+  default_prompt: "Use $unrealai-cpp to add a native UnrealAI chat request to this Unreal project."
