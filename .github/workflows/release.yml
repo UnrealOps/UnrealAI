@@ -38,8 +38,9 @@ jobs:
       - name: Synchronize Unreal integer version
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
-          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
         run: |
+          release_branch="$(python3 -c 'import json, os; print(json.loads(os.environ["RELEASE_PR"])["headBranchName"])')"
           git fetch --no-tags origin main:refs/remotes/origin/main
           trusted_scripts="${RUNNER_TEMP}/unrealai-release-ci"
           mkdir -p "${trusted_scripts}"
@@ -63,4 +64,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add UnrealAI.uplugin
           git commit -m "chore(release): synchronize Unreal plugin version"
-          git push origin "HEAD:${RELEASE_BRANCH}"
+          git push origin "HEAD:${release_branch}"
