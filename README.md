@@ -4,7 +4,7 @@
 
 ⭐ Star the repository if a native AI toolkit for Unreal Engine would be useful to your project.
 
-Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API for OpenAI-compatible Chat Completions providers.
+Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API for OpenAI, xAI, Anthropic, Google Gemini, and custom OpenAI-compatible providers.
 
 📚 See the [plugin guide](Documentation/README.md) for advanced request fields and the [CI guide](Documentation/ContinuousIntegration.md) for packaging and test automation.
 
@@ -29,19 +29,20 @@ Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API 
 UnrealAI is a provider-neutral Unreal Engine runtime plugin for adding generative AI to games, simulations, editor prototypes, and interactive experiences.
 
 - **Blueprint and C++ APIs** — use an asynchronous Blueprint node, a spawnable actor component, or the native callback client.
-- **Unified provider profiles** — switch between OpenAI, xAI, local gateways, and other OpenAI-compatible APIs without rewriting gameplay code.
+- **Native provider adapters** — use OpenAI-compatible Chat Completions, Anthropic Messages, and Gemini `generateContent` behind one Unreal request/response contract.
+- **Provider factories and profiles** — create `OpenAI()`, `XAI()`, `Anthropic()`, or `Gemini()` clients in C++, or select the same built-in profiles from Blueprints.
 - **Environment-first configuration** — resolve API keys, base URLs, and models from process variables or a project-root `.env` file.
-- **Structured output support** — request JSON objects or strict JSON Schema responses.
-- **Extensible payloads** — add multimodal content and provider-specific fields through raw JSON extension points.
+- **Structured output support** — request JSON objects or strict JSON Schema responses from compatible OpenAI endpoints.
+- **Extensible payloads** — pass provider-native content and request fields through raw JSON extension points.
 - **Runtime-only dependencies** — built on Unreal Engine's HTTP and JSON modules with no third-party runtime library.
 
-UnrealAI currently implements non-streaming `POST {BaseUrl}/chat/completions` requests. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
+UnrealAI currently implements non-streaming text generation through three protocol adapters. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
 
 ## 📋 Requirements
 
 - Unreal Engine 5.7 is the currently validated engine release.
 - The platform's Unreal Engine C++ toolchain is required when compiling the plugin from source.
-- An API key for the selected hosted provider, or an OpenAI-compatible endpoint that does not require one.
+- An API key for the selected hosted provider, or a custom endpoint that does not require one.
 
 ## 📦 Installation
 
@@ -114,7 +115,7 @@ In an Actor Blueprint, connect `Make Simple Chat Request` to `Create Chat Comple
 The illustration shows the shortest success path:
 
 1. Create a request with `Make Simple Chat Request`.
-2. Set `Provider Name` to `OpenAI`, `XAI`, or leave it empty to use the default profile.
+2. Set `Provider Name` to `OpenAI`, `XAI`, `Anthropic`, `Gemini`, or leave it empty to use the default profile.
 3. Connect the `Completed` response to `Get First Choice Content`.
 4. Connect `Failed` to `Break UnrealAIError` in the real graph and handle its `Message` value.
 
@@ -157,13 +158,13 @@ Create the client, resolve a provider profile, and submit a request:
 ```cpp
 // MyAIActor.cpp
 #include "UnrealAIBlueprintLibrary.h"
+#include "UnrealAIProviders.h"
 
 void AMyAIActor::AskUnrealAI()
 {
-    UnrealAIClient = NewObject<UUnrealAIClient>(this);
-
     FUnrealAIError ConfigError;
-    if (!UnrealAIClient->ConfigureFromSettings(TEXT("OpenAI"), ConfigError))
+    UnrealAIClient = UUnrealAIProviders::OpenAI(this, ConfigError);
+    if (!UnrealAIClient)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealAI configuration failed: %s"), *ConfigError.Message);
         return;
@@ -201,31 +202,46 @@ void AMyAIActor::HandleChatCompletion(
 }
 ```
 
+Switch the factory call to `XAI`, `Anthropic`, or `Gemini` without changing the request or callback. Pass a model as the third argument to override that provider's default for the client. `OpenAICompatibleFromProfile` selects a named compatible profile, while `OpenAICompatible` accepts a complete runtime configuration.
+
 ## 🔌 Provider configuration
 
 UnrealAI includes these profiles by default:
 
-| Provider | Base URL | Default model | API key variable |
-| --- | --- | --- | --- |
-| OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
-| xAI | `https://api.x.ai/v1` | `grok-4.6` | `XAI_API_KEY` |
+| Profile | Protocol | Base URL | Default model | API key variable |
+| --- | --- | --- | --- | --- |
+| OpenAI | OpenAI-compatible Chat Completions | `https://api.openai.com/v1` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
+| XAI | OpenAI-compatible Chat Completions | `https://api.x.ai/v1` | `grok-4.6` | `XAI_API_KEY` |
+| Anthropic | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| Gemini | Gemini `generateContent` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.7-flash` | `GEMINI_API_KEY` |
 
-Manage profiles under **Project Settings → Plugins → UnrealAI**. Each profile can define its base URL, model, authentication variable, timeout, and additional HTTP headers.
+Manage profiles under **Project Settings → Plugins → UnrealAI**. Each profile defines its API protocol, base URL, model, authentication variable, timeout, and additional HTTP headers.
 
-Both built-in profiles recognize these optional overrides:
+Each built-in profile recognizes provider-specific optional overrides:
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.6-luna
+XAI_BASE_URL=https://api.x.ai/v1
+XAI_MODEL=grok-4.6
+ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
+ANTHROPIC_MODEL=claude-sonnet-5
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+GEMINI_MODEL=gemini-3.7-flash
 ```
 
-Custom profiles can target other OpenAI-compatible providers or local gateways. API-key overrides stored directly in project settings are supported for development, but environment variables or a trusted server are safer choices.
+For backward compatibility, the XAI profile falls back to `OPENAI_BASE_URL` and `OPENAI_MODEL` only when its `XAI_*` overrides are unset. Custom profiles can target other OpenAI-compatible providers or local gateways by selecting the OpenAI-compatible protocol. API-key overrides stored directly in project settings are supported for development, but environment variables or a trusted server are safer choices.
+
+The shared request covers text messages, system instructions, temperature, top-p, output-token limits, and stop sequences across the native adapters. Provider-specific raw JSON uses that provider's native schema. Choice counts and `ResponseFormatJson` remain OpenAI-compatible features; normalized tool calls, multimodal helpers, and structured-output helpers for Anthropic and Gemini are not implemented yet.
 
 ## 🗺️ Features and roadmap
 
 | Capability | Status |
 | --- | --- |
-| Non-streaming Chat Completions | Available |
+| Non-streaming OpenAI-compatible Chat Completions | Available |
+| Native Anthropic Messages | Available |
+| Native Gemini `generateContent` | Available |
+| C++ provider factories | Available |
 | Blueprint async action | Available |
 | Blueprint-spawnable chat component | Available |
 | Native C++ callback client | Available |

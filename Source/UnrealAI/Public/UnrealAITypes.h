@@ -13,6 +13,14 @@ enum class EUnrealAIMessageRole : uint8
 	Tool UMETA(DisplayName = "tool")
 };
 
+UENUM(BlueprintType)
+enum class EUnrealAIProviderApi : uint8
+{
+	OpenAICompatibleChatCompletions UMETA(DisplayName = "OpenAI-Compatible Chat Completions"),
+	AnthropicMessages UMETA(DisplayName = "Anthropic Messages"),
+	GeminiGenerateContent UMETA(DisplayName = "Google Gemini Generate Content")
+};
+
 USTRUCT(BlueprintType)
 struct UNREALAI_API FUnrealAIProviderConfig
 {
@@ -20,6 +28,10 @@ struct UNREALAI_API FUnrealAIProviderConfig
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
 	FName Name = TEXT("OpenAI");
+
+	/** Selects the provider wire protocol. Existing profiles default to OpenAI-compatible Chat Completions. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
+	EUnrealAIProviderApi Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
 	FString BaseUrl = TEXT("https://api.openai.com/v1");

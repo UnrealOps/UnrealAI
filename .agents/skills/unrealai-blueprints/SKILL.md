@@ -31,6 +31,8 @@ Preserve an existing graph's architecture unless the user asks to change it.
 - Handle both the success and failure execution paths. Read `FUnrealAIError.Message` on failure and do not treat an empty response as success content.
 - Use `Get First Choice Content` and its `Has Content` output instead of assuming `Choices[0]` exists.
 - Leave `Model` empty to inherit the selected provider profile's default model.
+- Select `OpenAI`, `XAI`, `Anthropic`, or `Gemini` with the existing `Provider Name` pin/property; provider selection does not require provider-specific nodes.
+- Treat the response-format helper nodes as OpenAI-compatible features. Anthropic and Gemini currently normalize core text chat, not provider-independent tools, multimodal helpers, or structured output.
 - Do not enable `Stream`; streaming is not implemented.
 - Never put an API key in a Blueprint variable, node default, screenshot, source asset, or packaged client. Use process variables or a project-root `.env` for local editor development, and a trusted backend for shipped clients.
 - Keep the graph platform-neutral. UnrealAI nodes do not require macOS-, Windows-, or Linux-specific branches.

@@ -6,7 +6,8 @@ Use this reference with the public headers in the current checkout. The headers 
 
 | Need | API | Lifetime |
 | --- | --- | --- |
-| Direct native requests | `UUnrealAIClient` | Retain as a `UPROPERTY` until callbacks finish |
+| Built-in provider client | `UUnrealAIProviders` factory returning `UUnrealAIClient` | Retain as a `UPROPERTY` until callbacks finish |
+| Dynamic/custom provider client | `UUnrealAIClient` configuration or compatible factory | Retain as a `UPROPERTY` until callbacks finish |
 | Actor-owned prompt interface | `UUnrealAIChatComponent` | Create as a default subobject or owned component |
 | Request and response helpers | `UUnrealAIBlueprintLibrary` | Static functions; no retained instance |
 
@@ -22,12 +23,19 @@ Use `PublicDependencyModuleNames` instead when a public consumer header exposes 
 
 ## Provider resolution
 
-`ConfigureFromSettings(ProviderName, OutError)` resolves `UUnrealAISettings`:
+The built-in provider factories resolve `UUnrealAISettings` and return configured clients:
+
+- `UUnrealAIProviders::OpenAI`, `XAI`, `Anthropic`, and `Gemini`
+- each accepts a valid `UObject` outer, an output error, and an optional client-level model override
+- `OpenAICompatibleFromProfile` accepts a named OpenAI-compatible profile
+- `OpenAICompatible` accepts a complete configuration for a compatible endpoint
+
+`ConfigureFromSettings(ProviderName, OutError)` remains available for dynamic selection:
 
 - `NAME_None` selects `DefaultProviderName`.
-- `OpenAI` and `XAI` exist by default.
-- `OPENAI_API_KEY` and `XAI_API_KEY` supply the built-in profile secrets.
-- `OPENAI_BASE_URL` and `OPENAI_MODEL` can override the corresponding fields of either built-in profile.
+- `OpenAI`, `XAI`, `Anthropic`, and `Gemini` exist by default.
+- `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` supply their secrets.
+- Each profile has matching provider-specific base URL and model override variables. XAI falls back to `OPENAI_BASE_URL` and `OPENAI_MODEL` only when `XAI_BASE_URL` and `XAI_MODEL` are unset.
 - Existing process variables take precedence over values loaded from the consuming project's root `.env` file.
 
 Call `Configure(ProviderConfig)` when the application supplies a complete custom profile itself.
@@ -68,13 +76,13 @@ private:
 // MyAIActor.cpp
 #include "MyAIActor.h"
 #include "UnrealAIBlueprintLibrary.h"
+#include "UnrealAIProviders.h"
 
 void AMyAIActor::AskUnrealAI()
 {
-    UnrealAIClient = NewObject<UUnrealAIClient>(this);
-
     FUnrealAIError ConfigError;
-    if (!UnrealAIClient->ConfigureFromSettings(TEXT("OpenAI"), ConfigError))
+    UnrealAIClient = UUnrealAIProviders::OpenAI(this, ConfigError);
+    if (!UnrealAIClient)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealAI configuration failed: %s"), *ConfigError.Message);
         return;
@@ -111,14 +119,16 @@ void AMyAIActor::HandleChatCompletion(
 }
 ```
 
+Change only the factory name to target XAI, Anthropic, or Gemini. For a runtime-selected profile, create the retained client with `NewObject<UUnrealAIClient>(this)` and call `ConfigureFromSettings` before submitting the request.
+
 ## Request surface
 
-`FUnrealAIChatRequest` exposes:
+`FUnrealAIChatRequest` exposes a provider-neutral core:
 
 - `Model` and `Messages`
 - opt-in temperature, top-p, and token limits
 - number of choices and stop sequences
-- `ResponseFormatJson` for JSON object or JSON Schema output
+- `ResponseFormatJson` for JSON object or JSON Schema output on OpenAI-compatible profiles
 - `AdditionalParametersJson` for provider-specific root fields
 - `bStream`, which must remain false in the current implementation
 
@@ -128,7 +138,9 @@ void AMyAIActor::HandleChatCompletion(
 - `AdditionalFieldsJson` to merge provider-specific message fields
 - `Name` and `ToolCallId`
 
-Use `MakeJsonObjectResponseFormat()` or `MakeStrictJsonSchemaResponseFormat()` instead of hand-building `response_format` JSON when those formats meet the requirement.
+Use `MakeJsonObjectResponseFormat()` or `MakeStrictJsonSchemaResponseFormat()` instead of hand-building `response_format` JSON for a compatible OpenAI endpoint. Native Anthropic and Gemini adapters accept one choice and do not normalize these response-format helpers.
+
+System/developer messages, user/assistant text, temperature, top-p, output-token limits, and stop sequences map across all three protocols. `ContentJson`, `AdditionalFieldsJson`, and `AdditionalParametersJson` use the selected provider's native schema. Provider-independent tools, multimodal helpers, and native Anthropic/Gemini structured output are not implemented.
 
 ## Actor component pattern
 

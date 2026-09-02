@@ -58,19 +58,116 @@ namespace UnrealAISettingsPrivate
 		return VariableName.IsEmpty() ? FString() : FPlatformMisc::GetEnvironmentVariable(*VariableName).TrimStartAndEnd();
 	}
 
+	FString GetBaseUrlOverride(const FUnrealAIProviderConfig& Provider)
+	{
+		if (Provider.Name == TEXT("XAI"))
+		{
+			const FString XAIOverride = GetEnvValue(TEXT("XAI_BASE_URL"));
+			if (!XAIOverride.IsEmpty())
+			{
+				return XAIOverride;
+			}
+		}
+
+		const FString ConfiguredOverride = GetEnvValue(Provider.BaseUrlEnvironmentVariable);
+		if (!ConfiguredOverride.IsEmpty())
+		{
+			return ConfiguredOverride;
+		}
+
+		return Provider.Name == TEXT("XAI") ? GetEnvValue(TEXT("OPENAI_BASE_URL")) : FString();
+	}
+
+	FString GetModelOverride(const FUnrealAIProviderConfig& Provider)
+	{
+		if (Provider.Name == TEXT("XAI"))
+		{
+			const FString XAIOverride = GetEnvValue(TEXT("XAI_MODEL"));
+			if (!XAIOverride.IsEmpty())
+			{
+				return XAIOverride;
+			}
+		}
+
+		const FString ConfiguredOverride = GetEnvValue(Provider.ModelEnvironmentVariable);
+		if (!ConfiguredOverride.IsEmpty())
+		{
+			return ConfiguredOverride;
+		}
+
+		return Provider.Name == TEXT("XAI") ? GetEnvValue(TEXT("OPENAI_MODEL")) : FString();
+	}
+
 	void ApplyEnvironmentOverrides(FUnrealAIProviderConfig& Provider)
 	{
-		const FString BaseUrlOverride = GetEnvValue(Provider.BaseUrlEnvironmentVariable);
+		const FString BaseUrlOverride = GetBaseUrlOverride(Provider);
 		if (!BaseUrlOverride.IsEmpty())
 		{
 			Provider.BaseUrl = BaseUrlOverride;
 		}
 
-		const FString ModelOverride = GetEnvValue(Provider.ModelEnvironmentVariable);
+		const FString ModelOverride = GetModelOverride(Provider);
 		if (!ModelOverride.IsEmpty())
 		{
 			Provider.DefaultModel = ModelOverride;
 		}
+	}
+
+	bool TryMakeBuiltInProvider(FName ProviderName, FUnrealAIProviderConfig& OutProvider)
+	{
+		if (ProviderName == TEXT("OpenAI"))
+		{
+			OutProvider.Name = TEXT("OpenAI");
+			OutProvider.Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
+			OutProvider.BaseUrl = TEXT("https://api.openai.com/v1");
+			OutProvider.BaseUrlEnvironmentVariable = TEXT("OPENAI_BASE_URL");
+			OutProvider.DefaultModel = TEXT("gpt-5.6-luna");
+			OutProvider.ModelEnvironmentVariable = TEXT("OPENAI_MODEL");
+			OutProvider.ApiKeyEnvironmentVariable = TEXT("OPENAI_API_KEY");
+			OutProvider.TimeoutSeconds = 120.0f;
+			return true;
+		}
+
+		if (ProviderName == TEXT("XAI"))
+		{
+			OutProvider.Name = TEXT("XAI");
+			OutProvider.Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
+			OutProvider.BaseUrl = TEXT("https://api.x.ai/v1");
+			OutProvider.BaseUrlEnvironmentVariable = TEXT("XAI_BASE_URL");
+			OutProvider.DefaultModel = TEXT("grok-4.6");
+			OutProvider.ModelEnvironmentVariable = TEXT("XAI_MODEL");
+			OutProvider.ApiKeyEnvironmentVariable = TEXT("XAI_API_KEY");
+			OutProvider.TimeoutSeconds = 3600.0f;
+			return true;
+		}
+
+		if (ProviderName == TEXT("Anthropic"))
+		{
+			OutProvider.Name = TEXT("Anthropic");
+			OutProvider.Api = EUnrealAIProviderApi::AnthropicMessages;
+			OutProvider.BaseUrl = TEXT("https://api.anthropic.com/v1");
+			OutProvider.BaseUrlEnvironmentVariable = TEXT("ANTHROPIC_BASE_URL");
+			OutProvider.DefaultModel = TEXT("claude-sonnet-5");
+			OutProvider.ModelEnvironmentVariable = TEXT("ANTHROPIC_MODEL");
+			OutProvider.ApiKeyEnvironmentVariable = TEXT("ANTHROPIC_API_KEY");
+			OutProvider.TimeoutSeconds = 120.0f;
+			return true;
+		}
+
+		if (ProviderName == TEXT("Gemini"))
+		{
+			OutProvider.Name = TEXT("Gemini");
+			OutProvider.Api = EUnrealAIProviderApi::GeminiGenerateContent;
+			OutProvider.BaseUrl = TEXT("https://generativelanguage.googleapis.com/v1beta");
+			OutProvider.BaseUrlEnvironmentVariable = TEXT("GEMINI_BASE_URL");
+			OutProvider.DefaultModel = TEXT("gemini-3.7-flash");
+			OutProvider.ModelEnvironmentVariable = TEXT("GEMINI_MODEL");
+			OutProvider.ApiKeyEnvironmentVariable = TEXT("GEMINI_API_KEY");
+			OutProvider.TimeoutSeconds = 120.0f;
+			return true;
+		}
+
+		return false;
 	}
 }
 
@@ -78,25 +175,19 @@ UUnrealAISettings::UUnrealAISettings()
 {
 	if (ProviderProfiles.Num() == 0)
 	{
-		FUnrealAIProviderConfig OpenAIProvider;
-		OpenAIProvider.Name = TEXT("OpenAI");
-		OpenAIProvider.BaseUrl = TEXT("https://api.openai.com/v1");
-		OpenAIProvider.BaseUrlEnvironmentVariable = TEXT("OPENAI_BASE_URL");
-		OpenAIProvider.DefaultModel = TEXT("gpt-5.6-luna");
-		OpenAIProvider.ModelEnvironmentVariable = TEXT("OPENAI_MODEL");
-		OpenAIProvider.ApiKeyEnvironmentVariable = TEXT("OPENAI_API_KEY");
-		OpenAIProvider.TimeoutSeconds = 120.0f;
-		ProviderProfiles.Add(OpenAIProvider);
-
-		FUnrealAIProviderConfig XAIProvider;
-		XAIProvider.Name = TEXT("XAI");
-		XAIProvider.BaseUrl = TEXT("https://api.x.ai/v1");
-		XAIProvider.BaseUrlEnvironmentVariable = TEXT("OPENAI_BASE_URL");
-		XAIProvider.DefaultModel = TEXT("grok-4.6");
-		XAIProvider.ModelEnvironmentVariable = TEXT("OPENAI_MODEL");
-		XAIProvider.ApiKeyEnvironmentVariable = TEXT("XAI_API_KEY");
-		XAIProvider.TimeoutSeconds = 3600.0f;
-		ProviderProfiles.Add(XAIProvider);
+		const FName BuiltInProviderNames[] = {
+			TEXT("OpenAI"),
+			TEXT("XAI"),
+			TEXT("Anthropic"),
+			TEXT("Gemini")};
+		for (const FName ProviderName : BuiltInProviderNames)
+		{
+			FUnrealAIProviderConfig Provider;
+			if (UnrealAISettingsPrivate::TryMakeBuiltInProvider(ProviderName, Provider))
+			{
+				ProviderProfiles.Add(Provider);
+			}
+		}
 	}
 }
 
@@ -167,6 +258,12 @@ bool UUnrealAISettings::TryGetProviderConfig(FName ProviderName, FUnrealAIProvid
 		}
 	}
 
+	if (UnrealAISettingsPrivate::TryMakeBuiltInProvider(ResolvedName, OutProvider))
+	{
+		UnrealAISettingsPrivate::ApplyEnvironmentOverrides(OutProvider);
+		return true;
+	}
+
 	return false;
 }
 
@@ -178,7 +275,7 @@ FText UUnrealAISettings::GetSectionText() const
 
 FText UUnrealAISettings::GetSectionDescription() const
 {
-	return LOCTEXT("UnrealAISettingsDescription", "Configure OpenAI-compatible model providers such as OpenAI, xAI, OpenRouter, or local gateways.");
+	return LOCTEXT("UnrealAISettingsDescription", "Configure OpenAI-compatible, Anthropic Messages, and Google Gemini model providers.");
 }
 #endif
 

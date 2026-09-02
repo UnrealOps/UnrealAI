@@ -1,20 +1,15 @@
-# UnrealAI
+# UnrealAI provider and API guide
 
-Unreal Engine runtime SDK for OpenAI-compatible generative AI providers.
+UnrealAI is a provider-neutral Unreal Engine runtime SDK. One non-streaming chat contract drives three wire protocols:
 
-The SDK starts with the portable Chat Completions contract:
+| Profile | Wire request | Default model | API key variable |
+| --- | --- | --- | --- |
+| `OpenAI` | `POST {BaseUrl}/chat/completions` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
+| `XAI` | `POST {BaseUrl}/chat/completions` | `grok-4.6` | `XAI_API_KEY` |
+| `Anthropic` | `POST {BaseUrl}/messages` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| `Gemini` | `POST {BaseUrl}/models/{model}:generateContent` | `gemini-3.7-flash` | `GEMINI_API_KEY` |
 
-- `POST {BaseUrl}/chat/completions`
-- Bearer token authentication
-- OpenAI-style `model`, `messages`, sampling, token, stop, and response fields
-- Raw JSON extension points for provider-specific fields
-
-The plugin is provider-neutral. The default profiles are:
-
-- `OpenAI`: `https://api.openai.com/v1`, model `gpt-5.6-luna`, key env var `OPENAI_API_KEY`
-- `XAI`: `https://api.x.ai/v1`, model `grok-4.6`, key env var `XAI_API_KEY`
-
-Both default profiles also support `OPENAI_BASE_URL` and `OPENAI_MODEL` as environment overrides.
+OpenAI and XAI share the OpenAI-compatible adapter. Anthropic and Gemini use their native request, authentication, error, response, and usage formats. The adapters normalize ordinary text conversations into `FUnrealAIChatResponse` while preserving the provider response in `RawJson`.
 
 ## Install in another project
 
@@ -27,113 +22,109 @@ Copy `Plugins/UnrealAI` into the target project's `Plugins` folder, then enable 
 }
 ```
 
-Regenerate project files if needed and rebuild.
+Regenerate project files if needed and rebuild. C++ consumers must add `UnrealAI` to the appropriate dependency list in their module's `.Build.cs`.
 
 ## Configure providers
 
-Project Settings -> Plugins -> UnrealAI exposes provider profiles.
+Project Settings → Plugins → UnrealAI exposes provider profiles. A profile selects an `EUnrealAIProviderApi` protocol and supplies its base URL, default model, environment-variable names, timeout, and optional headers.
 
-Prefer environment variables for secrets:
+For local editor development, copy the plugin's `.env.example` to the consuming project's root as `.env`, then add only the keys needed by that project. UnrealAI loads the project-root file before resolving a profile; an existing process environment variable takes precedence.
 
-```bash
-export OPENAI_API_KEY="..."
-export XAI_API_KEY="..."
+```text
+<copy command for the current host> Plugins/UnrealAI/.env.example <project root>/.env
 ```
 
-For local editor development, copy the plugin's `.env.example` to the consuming project's root as `.env`, then add the desired keys. The SDK loads that project-root `.env` file before resolving provider settings:
+Built-in optional overrides are `OPENAI_BASE_URL`/`OPENAI_MODEL`, `XAI_BASE_URL`/`XAI_MODEL`, `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`, and `GEMINI_BASE_URL`/`GEMINI_MODEL`. For compatibility with earlier UnrealAI releases, XAI falls back to the OpenAI base URL and model variables only when its XAI-specific variables are unset.
 
-```bash
-cp Plugins/UnrealAI/.env.example .env
+The `.env` loader does not replace process values it does not own. Use `Reload Project Env File` from Blueprint to reload values during editor testing.
+
+Never store a real API key in project settings, Blueprint assets, logs, screenshots, or a packaged client. A production game should call a trusted backend that owns hosted-provider credentials.
+
+## C++ provider factories
+
+`UUnrealAIProviders` provides a clean provider-level creation surface:
+
+```cpp
+#include "UnrealAIBlueprintLibrary.h"
+#include "UnrealAIProviders.h"
+
+// UnrealAIClient is a UPROPERTY on this UObject so it remains alive in flight.
+FUnrealAIError ConfigError;
+UnrealAIClient = UUnrealAIProviders::Anthropic(this, ConfigError);
+if (!UnrealAIClient)
+{
+    UE_LOG(LogTemp, Error, TEXT("UnrealAI configuration failed: %s"), *ConfigError.Message);
+    return;
+}
+
+const FUnrealAIChatRequest Request =
+    UUnrealAIBlueprintLibrary::MakeSimpleChatRequest(
+        TEXT("Summarize this level objective in one sentence."));
+
+UnrealAIClient->CreateChatCompletion(
+    Request,
+    FUnrealAIChatCompletionNativeDelegate::CreateUObject(
+        this,
+        &ThisClass::HandleChatCompletion));
 ```
 
-```env
-XAI_API_KEY=...
-OPENAI_BASE_URL=https://api.x.ai/v1
-OPENAI_MODEL=grok-4.6
-```
+The built-in factories are:
 
-The `.env` loader only sets variables that are not already present in the editor process environment. Use `Reload Project Env File` from Blueprint to force a reload during editor testing.
+- `UUnrealAIProviders::OpenAI(Outer, OutError, ModelOverride)`
+- `UUnrealAIProviders::XAI(Outer, OutError, ModelOverride)`
+- `UUnrealAIProviders::Anthropic(Outer, OutError, ModelOverride)`
+- `UUnrealAIProviders::Gemini(Outer, OutError, ModelOverride)`
 
-To add another OpenAI-compatible provider, add a profile with:
+Leave the optional model override empty to use the resolved profile default. `OpenAICompatibleFromProfile` creates a client from a named compatible profile. `OpenAICompatible` accepts a complete `FUnrealAIProviderConfig` and forces the compatible Chat Completions protocol, which is useful for local model servers and gateways.
 
-- `Name`: any `FName` used from C++ or Blueprint
-- `BaseUrl`: the provider API root, usually ending in `/v1`
-- `BaseUrlEnvironmentVariable`: optional env var override for `BaseUrl`
-- `DefaultModel`: provider model name
-- `ModelEnvironmentVariable`: optional env var override for `DefaultModel`
-- `ApiKeyEnvironmentVariable`: env var that stores the key
-- `TimeoutSeconds`: increase for slow/reasoning models
-- `AdditionalHeaders`: optional provider-specific headers
+The existing `NewObject<UUnrealAIClient>(Outer)` plus `ConfigureFromSettings` flow remains supported. In either flow, retain the client in a `UPROPERTY`, handle `FUnrealAIError` before reading the response, and tolerate successful responses with no choices.
 
 ## Blueprint usage
 
 Use `Make Simple Chat Request`, then call `Create Chat Completion (UnrealAI)`.
 
-- `Provider Name`: `OpenAI`, `XAI`, or empty to use the default provider
-- `Completed`: receives `FUnrealAIChatResponse`
-- `Failed`: receives `FUnrealAIError`
-- Use `Get First Choice Content` to read the assistant text from a response.
+- `Provider Name`: `OpenAI`, `XAI`, `Anthropic`, `Gemini`, a custom profile, or empty to use the default.
+- `Completed`: receives `FUnrealAIChatResponse`; use `Get First Choice Content` and branch on `Has Content`.
+- `Failed`: receives `FUnrealAIError`; handle its message without exposing request or credential data.
 
-For actor-centric gameplay, add `UnrealAIChatComponent` to an actor or Blueprint and call `Send Prompt`. Configure `Provider Name`, `Model`, `System Prompt`, and optional sampling values on the component. Bind `On Chat Completed` and `On Chat Failed`.
+For actor-centric gameplay, add `UnrealAIChatComponent` and call `Send Prompt`. Configure `Provider Name`, optional `Model`, `System Prompt`, and sampling values on the component. Bind `On Chat Completed` and `On Chat Failed` before sending.
 
-This project includes `AInteractiveAgentAITestActor` as a simple smoke test. Place it in a level, keep `ProviderName` on its chat component as `XAI`, and call `Send Test Prompt` from Blueprint or set `Send On Begin Play` for PIE testing. Responses and failures are written to `LogInteractiveAgent`.
+![Illustrated UnrealAI Blueprint chat completion flow](Images/blueprint-chat-completion.png)
 
-For multimodal/tool/provider-specific payloads:
+This image is an illustration, not a literal Unreal Editor capture. Add the failure branch in production graphs.
 
-- `FUnrealAIChatMessage.ContentJson` overrides plain string content with a raw JSON value.
-- `FUnrealAIChatMessage.AdditionalFieldsJson` merges raw JSON into a message object.
-- `FUnrealAIChatRequest.ResponseFormatJson` sets `response_format`.
-- `FUnrealAIChatRequest.AdditionalParametersJson` merges raw JSON into the request root.
+## Shared request mapping
 
-## C++ usage
+The common text surface maps as follows:
 
-```cpp
-UUnrealAIClient* Client = NewObject<UUnrealAIClient>();
-FUnrealAIError ConfigError;
-if (!Client->ConfigureFromSettings(TEXT("XAI"), ConfigError))
-{
-    return;
-}
+| UnrealAI field | OpenAI compatible | Anthropic | Gemini |
+| --- | --- | --- | --- |
+| System/developer messages | message roles | top-level `system` blocks | `systemInstruction.parts` |
+| User/assistant messages | `messages` | `messages` | `contents` with user/model roles |
+| Temperature/top-p | root fields | root fields | `generationConfig` |
+| Output token limit | completion/max tokens | required `max_tokens` | `maxOutputTokens` |
+| Stop sequences | `stop` | `stop_sequences` | `stopSequences` |
+| Choice count | supported | one only | one only |
+| `ResponseFormatJson` helpers | supported | not normalized | not normalized |
 
-FUnrealAIChatRequest Request;
-Request.Messages.Add(UUnrealAIBlueprintLibrary::MakeChatMessage(
-    EUnrealAIMessageRole::User,
-    TEXT("Summarize this level objective in one sentence.")));
+`Request.Model` overrides the configured default for one request. Streaming is rejected before an HTTP request starts.
 
-Client->CreateChatCompletion(
-    Request,
-    FUnrealAIChatCompletionNativeDelegate::CreateLambda(
-        [](const FUnrealAIChatResponse& Response, const FUnrealAIError& Error)
-        {
-            if (Error.bIsError)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("AI error: %s"), *Error.Message);
-                return;
-            }
+`ContentJson`, `AdditionalFieldsJson`, and `AdditionalParametersJson` remain escape hatches, but their JSON must match the selected provider's native schema. Anthropic system `ContentJson` represents system content blocks; Gemini content JSON represents one Part object or an array of Part objects. Normalized provider-independent tool calls and multimodal helpers are not available yet.
 
-            if (Response.Choices.Num() > 0)
-            {
-                UE_LOG(LogTemp, Log, TEXT("AI: %s"), *Response.Choices[0].Content);
-            }
-        }));
+## Error and response normalization
+
+All adapters populate `FUnrealAIError` for HTTP and provider errors. Provider error bodies remain available in `RawJson`. Successful text is normalized to `Response.Choices`; token counts are normalized to prompt, completion, and total usage fields when supplied by the provider.
+
+Provider-native details that do not have a shared field remain in `Response.RawJson` and each choice's `RawMessageJson`. Do not log these values by default because prompts and responses may be sensitive.
+
+## Validation
+
+Portable validators and native Automation tests are offline and credential-free. From the plugin root, run:
+
+```text
+<python3> Scripts/ci/validate_plugin.py
+<python3> Scripts/ci/validate_skills.py
+<python3> Scripts/ci/validate_release.py
 ```
 
-## Current scope
-
-Implemented:
-
-- Runtime plugin module
-- Provider settings
-- Non-streaming Chat Completions
-- Blueprint async node
-- Blueprint-spawnable chat actor component
-- C++ native callback client
-- Structured response and error parsing
-- Raw JSON extension points
-
-Not yet implemented:
-
-- SSE streaming parser
-- Responses API abstraction
-- Image/audio/embedding convenience wrappers
-- Retry/backoff policy
+With Unreal Engine installed and `UNREAL_ENGINE_ROOT` configured for the host, run `Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>`. A native run validates only its matching host platform.

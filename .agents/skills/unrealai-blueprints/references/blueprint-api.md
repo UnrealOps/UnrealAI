@@ -8,7 +8,7 @@ Use this pattern for one request:
 
 1. Add `Make Simple Chat Request` and enter the prompt. Leave `Model` empty to use the provider default.
 2. Add `Create Chat Completion (UnrealAI)` and connect the request value.
-3. Set `Provider Name` to `OpenAI`, `XAI`, a custom profile name, or `None` for the default profile.
+3. Set `Provider Name` to `OpenAI`, `XAI`, `Anthropic`, `Gemini`, a custom profile name, or `None` for the default profile.
 4. Connect the async node's `Completed` execution path and `Response` value to `Get First Choice Content`.
 5. Branch on `Has Content` before consuming the returned string.
 6. Connect `Failed`, break the supplied `UnrealAIError`, and display or handle `Message` without exposing secrets.
@@ -47,14 +47,14 @@ The component creates and retains its internal client. Do not create a second cl
 
 `UnrealAIChatMessage` supports `System`, `Developer`, `User`, `Assistant`, and `Tool` roles. Use `Content` for ordinary text.
 
-Use advanced JSON pins only when needed:
+Use advanced JSON pins only when needed. Their schema is selected-provider specific:
 
 - `Content Json` replaces string content with a JSON value, including multimodal arrays.
 - `Additional Fields Json` merges fields into one message object.
-- `Response Format Json` sets the request's `response_format` object.
+- `Response Format Json` sets the request's `response_format` object for OpenAI-compatible profiles.
 - `Additional Parameters Json` merges fields into the request root.
 
-Invalid JSON fails request construction. Prefer the provided response-format helper nodes over manually typed JSON.
+Invalid JSON fails request construction. Prefer the provided response-format helper nodes over manually typed JSON for OpenAI-compatible profiles. Anthropic and Gemini support core text chat through the same nodes but do not yet normalize choice counts, tools, multimodal helpers, or structured-output helpers.
 
 ## Configuration and secrets
 
@@ -64,6 +64,8 @@ Provider profiles live under **Project Settings → Plugins → UnrealAI**. The 
 | --- | --- | --- |
 | `OpenAI` | `gpt-5.6-luna` | `OPENAI_API_KEY` |
 | `XAI` | `grok-4.6` | `XAI_API_KEY` |
+| `Anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| `Gemini` | `gemini-3.7-flash` | `GEMINI_API_KEY` |
 
 For local editor development, copy `.env.example` to `.env` in the consuming project root. Process environment variables take precedence. Never put a real key into a Blueprint asset, screenshot, source-controlled setting, or packaged client.
 

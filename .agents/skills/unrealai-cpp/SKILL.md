@@ -12,6 +12,7 @@ Build against the API in the current checkout. Do not infer UnrealAI behavior fr
 Treat the directory containing `UnrealAI.uplugin` as the plugin root. Before changing consumer code, inspect these public contracts because the checkout may be newer than this skill:
 
 - `Source/UnrealAI/Public/UnrealAIClient.h`
+- `Source/UnrealAI/Public/UnrealAIProviders.h`
 - `Source/UnrealAI/Public/UnrealAIChatComponent.h`
 - `Source/UnrealAI/Public/UnrealAIBlueprintLibrary.h`
 - `Source/UnrealAI/Public/UnrealAITypes.h`
@@ -20,7 +21,8 @@ Read [references/cpp-api.md](references/cpp-api.md) whenever implementing or rev
 
 ## Choose the integration
 
-- Prefer `UUnrealAIClient` for native services, subsystems, or request code that needs direct control over messages and callbacks.
+- Prefer `UUnrealAIProviders::OpenAI`, `XAI`, `Anthropic`, or `Gemini` to create a configured `UUnrealAIClient` for a built-in provider.
+- Use `UUnrealAIClient::ConfigureFromSettings` when the provider name is selected dynamically, and `OpenAICompatible` or `OpenAICompatibleFromProfile` for custom compatible gateways.
 - Prefer `UUnrealAIChatComponent` for an actor-owned conversation interface with `SendPrompt`, `SendMessages`, and multicast result events.
 - Use `UUnrealAIBlueprintLibrary` helpers from C++ when they make request or response handling clearer; they are not Blueprint-only.
 
@@ -30,7 +32,9 @@ Preserve the integration style already used by the consumer unless the user asks
 
 - Add `UnrealAI` to the consuming module's `PrivateDependencyModuleNames`, or to `PublicDependencyModuleNames` when UnrealAI types appear in public headers.
 - Give every `UUnrealAIClient` an appropriate `UObject` outer and retain it in a `UPROPERTY` for the entire asynchronous request. A temporary unreferenced client can be garbage-collected.
-- Call `Configure` or `ConfigureFromSettings` before `CreateChatCompletion`.
+- Create the client through `UUnrealAIProviders`, or call `Configure`/`ConfigureFromSettings`, before `CreateChatCompletion`.
+- Keep common request code provider-neutral. Provider-native JSON passed through `ContentJson`, `AdditionalFieldsJson`, or `AdditionalParametersJson` must match the selected adapter.
+- Treat choice count and `ResponseFormatJson` as OpenAI-compatible features. Anthropic and Gemini currently normalize core text chat only; do not imply normalized tools, multimodal helpers, or native structured-output helpers.
 - Handle `FUnrealAIError` before reading the response, and tolerate a successful response with no choices.
 - Leave `Request.Model` empty when the configured provider's default model is intended.
 - Do not set `bStream`; streaming is not implemented.
