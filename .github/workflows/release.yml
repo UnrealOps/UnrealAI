@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Prepare or publish release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Prepare release pull request or publish release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+      - name: Check out generated release branch
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+      - name: Synchronize Unreal integer version
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          trusted_scripts="${RUNNER_TEMP}/unrealai-release-ci"
+          mkdir -p "${trusted_scripts}"
+          for script in sync_release_version.py validate_plugin.py validate_skills.py validate_release.py; do
+            git show "origin/main:Scripts/ci/${script}" > "${trusted_scripts}/${script}"
+          done
+
+          python3 "${trusted_scripts}/sync_release_version.py" \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --base-ref origin/main
+          UNREALAI_REPOSITORY_ROOT="${GITHUB_WORKSPACE}" python3 "${trusted_scripts}/validate_plugin.py"
+          UNREALAI_REPOSITORY_ROOT="${GITHUB_WORKSPACE}" python3 "${trusted_scripts}/validate_skills.py"
+          UNREALAI_REPOSITORY_ROOT="${GITHUB_WORKSPACE}" python3 "${trusted_scripts}/validate_release.py"
+
+          if git diff --quiet -- UnrealAI.uplugin; then
+            echo "Unreal integer version already matches the release candidate."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add UnrealAI.uplugin
+          git commit -m "chore(release): synchronize Unreal plugin version"
+          git push origin "HEAD:${RELEASE_BRANCH}"

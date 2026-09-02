@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "UnrealAI",
+	"Description": "UnrealAI provider-neutral SDK for OpenAI-compatible chat generation.",
+	"Category": "AI",
+	"CreatedBy": "EngineWorks",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"Installed": false,
+	"EnabledByDefault": false,
+	"Modules": [
+		{
+			"Name": "UnrealAI",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
