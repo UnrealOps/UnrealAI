@@ -155,13 +155,24 @@ def validate_env_example(errors: list[str]) -> None:
         add_error(errors, f"Unable to read .env.example: {exc}")
         return
 
+    names: set[str] = set()
     for line_number, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         name, value = stripped.split("=", 1)
+        names.add(name)
         if re.search(r"(?:KEY|PASSWORD|SECRET|TOKEN)$", name, re.IGNORECASE) and value.strip():
             add_error(errors, f".env.example:{line_number} contains a non-empty sensitive value.")
+
+    required_api_key_variables = {
+        "OPENAI_API_KEY",
+        "XAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+    }
+    for missing_name in sorted(required_api_key_variables - names):
+        add_error(errors, f".env.example is missing built-in provider variable: {missing_name}")
 
 
 def validate_files(files: list[Path], errors: list[str]) -> None:

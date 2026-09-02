@@ -28,8 +28,10 @@ SKILL_CONTRACTS = {
         "reference": "references/cpp-api.md",
         "symbols": {
             "UUnrealAIClient",
+            "UUnrealAIProviders",
             "ConfigureFromSettings",
             "CreateChatCompletion",
+            "OpenAICompatibleFromProfile",
             "UUnrealAIChatComponent",
             "SendPrompt",
             "SendMessages",
@@ -46,6 +48,8 @@ SKILL_CONTRACTS = {
             "CreateChatCompletion",
             "GetFirstChoiceContent",
             "bStream",
+            "Anthropic",
+            "Gemini",
         },
     },
     "unrealai-blueprints": {
@@ -64,6 +68,7 @@ SKILL_CONTRACTS = {
             "SendMessages",
             "OnChatCompleted",
             "OnChatFailed",
+            "EUnrealAIProviderApi",
         },
         "claims": {
             "Create Chat Completion (UnrealAI)",
@@ -73,6 +78,8 @@ SKILL_CONTRACTS = {
             "Completed",
             "Failed",
             "Has Content",
+            "Anthropic",
+            "Gemini",
         },
     },
 }
@@ -211,6 +218,20 @@ def validate_shared_api_claims(errors: list[str]) -> None:
         "https://api.x.ai/v1",
         "grok-4.6",
         "XAI_API_KEY",
+        "XAI_BASE_URL",
+        "XAI_MODEL",
+        "Anthropic",
+        "https://api.anthropic.com/v1",
+        "claude-sonnet-5",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "Gemini",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini-3.7-flash",
+        "GEMINI_API_KEY",
+        "GEMINI_BASE_URL",
+        "GEMINI_MODEL",
     }
     for source_value in settings_contract:
         if f'TEXT("{source_value}")' not in SETTINGS_SOURCE:
@@ -227,15 +248,15 @@ def validate_shared_api_claims(errors: list[str]) -> None:
 
     cpp_reference = read_text(SKILLS_ROOT / "unrealai-cpp/references/cpp-api.md", errors)
     if cpp_reference:
-        ownership = cpp_reference.find("UPROPERTY")
-        creation = cpp_reference.find("NewObject<UUnrealAIClient>(this)")
-        configure = cpp_reference.find("ConfigureFromSettings")
-        request = cpp_reference.find("CreateChatCompletion", configure + 1)
+        ownership = cpp_reference.find("UPROPERTY()")
+        creation = cpp_reference.find("UnrealAIClient = UUnrealAIProviders::OpenAI(this, ConfigError);")
+        configuration_check = cpp_reference.find("if (!UnrealAIClient)", creation + 1)
+        request = cpp_reference.find("CreateChatCompletion", configuration_check + 1)
         error_check = cpp_reference.find("if (Error.bIsError)")
         response_read = cpp_reference.find("GetFirstChoiceContent", error_check + 1)
-        if min(ownership, creation, configure, request, error_check, response_read) < 0:
+        if min(ownership, creation, configuration_check, request, error_check, response_read) < 0:
             add_error(errors, "The C++ reference is missing a required ownership or request-handling step.")
-        elif not (ownership < creation and configure < request and error_check < response_read):
+        elif not (ownership < creation < configuration_check < request and error_check < response_read):
             add_error(errors, "The C++ reference demonstrates an unsafe request or response order.")
 
 
