@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/UnrealOps/UnrealAI/compare/v0.1.0...v0.2.0) (2026-09-02)
+
+
+### Features
+
+* **providers:** add Anthropic and Gemini clients ([#4](https://github.com/UnrealOps/UnrealAI/issues/4)) ([33f4a4d](https://github.com/UnrealOps/UnrealAI/commit/33f4a4d18b7faad75a35544df0d094873bef5d9b))
+
 ## 0.1.0 (2026-09-02)
 
 
