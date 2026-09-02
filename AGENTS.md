@@ -1,6 +1,6 @@
 # UnrealAI Repository Instructions
 
-This file applies to the entire repository. UnrealAI is a standalone Unreal Engine runtime plugin that provides provider-neutral, OpenAI-compatible AI APIs to C++ and Blueprints. Keep the plugin usable when copied or cloned into an Unreal project's `Plugins/UnrealAI` directory.
+This file applies to the entire repository. UnrealAI is a standalone Unreal Engine runtime plugin that provides provider-neutral OpenAI-compatible, Anthropic, and Google Gemini APIs to C++ and Blueprints. Keep the plugin usable when copied or cloned into an Unreal project's `Plugins/UnrealAI` directory.
 
 ## Project Baseline
 
@@ -8,7 +8,7 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 - The initial release is `0.1.0`; release tags use the `v0.1.0` form.
 - Unreal Engine 5.7 is the currently validated engine release.
 - `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
-- Chat Completions is currently non-streaming. Do not describe planned streaming or other roadmap features as implemented.
+- Chat generation is currently non-streaming. Do not describe planned streaming or other roadmap features as implemented.
 - The built-in provider defaults are defined in `Source/UnrealAI/Private/UnrealAISettings.cpp`. Avoid duplicating those values unless a user-facing example requires them, and update every documented and validated copy when they change.
 
 ## Repository Map

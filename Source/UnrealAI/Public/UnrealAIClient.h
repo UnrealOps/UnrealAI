@@ -31,7 +31,11 @@ private:
 	TArray<FHttpRequestPtr> InFlightRequests;
 
 	FString ResolveApiKey() const;
-	FString BuildEndpointUrl(const FString& Path) const;
-	bool BuildChatCompletionPayload(const FUnrealAIChatRequest& Request, FString& OutPayload, FUnrealAIError& OutError) const;
-	void HandleChatCompletionResponse(FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bWasSuccessful, FUnrealAIChatCompletionNativeDelegate CompletionDelegate);
+	void HandleChatCompletionResponse(
+		FHttpRequestPtr HttpRequest,
+		FHttpResponsePtr HttpResponse,
+		bool bWasSuccessful,
+		EUnrealAIProviderApi ProviderApi,
+		FString ResolvedModel,
+		FUnrealAIChatCompletionNativeDelegate CompletionDelegate);
 };

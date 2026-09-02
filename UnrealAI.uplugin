@@ -3,7 +3,7 @@
 	"Version": 1,
 	"VersionName": "0.1.0",
 	"FriendlyName": "UnrealAI",
-	"Description": "UnrealAI provider-neutral SDK for OpenAI-compatible chat generation.",
+	"Description": "Provider-neutral Unreal Engine SDK for OpenAI, xAI, Anthropic, Gemini, and compatible APIs.",
 	"Category": "AI",
 	"CreatedBy": "EngineWorks",
 	"DocsURL": "",
