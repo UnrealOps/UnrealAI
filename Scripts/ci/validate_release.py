@@ -135,6 +135,10 @@ def validate_workflow(errors: list[str]) -> None:
         add_error(errors, "The release workflow must run on pushes to main.")
     if "contents: write" not in workflow or "pull-requests: write" not in workflow:
         add_error(errors, "The release workflow is missing required least-privilege write permissions.")
+    if "RELEASE_PR: ${{ steps.release.outputs.pr }}" not in workflow:
+        add_error(errors, "The release workflow must defer parsing the optional release PR output.")
+    if "RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr)" in workflow:
+        add_error(errors, "The release workflow must not parse an empty PR output before evaluating its step guard.")
 
     pinned_actions = {name for name, _ in PINNED_ACTION_PATTERN.findall(workflow)}
     for required_action in ("actions/checkout", "googleapis/release-please-action"):
