@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/UnrealOps/UnrealAI/compare/v0.2.0...v0.3.0) (2026-09-03)
+
+
+### Features
+
+* **streaming:** add provider-neutral SSE support ([e65e941](https://github.com/UnrealOps/UnrealAI/commit/e65e941343573864dae677b95477fcb6839066e1))
+
 ## [0.2.0](https://github.com/UnrealOps/UnrealAI/compare/v0.1.0...v0.2.0) (2026-09-02)
 
 
