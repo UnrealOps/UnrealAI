@@ -130,6 +130,12 @@ namespace UnrealAIProviderAdapterPrivate
 		}
 	}
 
+	void AddStreamingHeaders(FUnrealAIHttpRequestData& RequestData)
+	{
+		RequestData.Headers.Add(TEXT("Accept"), TEXT("text/event-stream"));
+		RequestData.Headers.Add(TEXT("Cache-Control"), TEXT("no-cache"));
+	}
+
 	bool ValidateCommonRequest(
 		const FUnrealAIProviderConfig& ProviderConfig,
 		const FUnrealAIChatRequest& Request,
@@ -290,6 +296,116 @@ namespace UnrealAIProviderAdapterPrivate
 		return true;
 	}
 
+	FUnrealAIChatChoice& FindOrAddChoice(FUnrealAIChatResponse& Response, int32 ChoiceIndex)
+	{
+		if (FUnrealAIChatChoice* ExistingChoice = Response.Choices.FindByPredicate(
+			[ChoiceIndex](const FUnrealAIChatChoice& Choice)
+			{
+				return Choice.Index == ChoiceIndex;
+			}))
+		{
+			return *ExistingChoice;
+		}
+
+		FUnrealAIChatChoice& Choice = Response.Choices.AddDefaulted_GetRef();
+		Choice.Index = ChoiceIndex;
+		return Choice;
+	}
+
+	FString ResolveProviderEventType(const FUnrealAISseEvent& SseEvent, const TSharedPtr<FJsonObject>& RootObject)
+	{
+		if (!SseEvent.EventType.IsEmpty() && SseEvent.EventType != TEXT("message"))
+		{
+			return SseEvent.EventType;
+		}
+
+		FString JsonType;
+		if (RootObject.IsValid())
+		{
+			RootObject->TryGetStringField(TEXT("type"), JsonType);
+		}
+		return JsonType;
+	}
+
+	FUnrealAIChatStreamEvent MakeStreamEvent(
+		EUnrealAIChatStreamEventType Type,
+		const FUnrealAISseEvent& SseEvent,
+		const TSharedPtr<FJsonObject>& RootObject)
+	{
+		FUnrealAIChatStreamEvent Event;
+		Event.Type = Type;
+		Event.ProviderEventType = ResolveProviderEventType(SseEvent, RootObject);
+		Event.RawJson = SseEvent.Data;
+		return Event;
+	}
+
+	bool ParseStreamJson(
+		const FUnrealAISseEvent& SseEvent,
+		TSharedPtr<FJsonObject>& OutRootObject,
+		FUnrealAIError& OutError)
+	{
+		FString ParseError;
+		if (!ParseJsonObject(SseEvent.Data, OutRootObject, ParseError))
+		{
+			OutError = UnrealAIProviderAdapters::MakeError(
+				FString::Printf(TEXT("Provider returned invalid streaming JSON: %s"), *ParseError),
+				200,
+				SseEvent.Data);
+			OutError.Type = TEXT("stream_protocol_error");
+			OutError.Code = TEXT("invalid_stream_json");
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+		if (OutRootObject->TryGetObjectField(TEXT("error"), ErrorObject))
+		{
+			OutError = ParseApiError(200, SseEvent.Data);
+			return false;
+		}
+		return true;
+	}
+
+	bool ParseOpenAIUsage(const TSharedPtr<FJsonObject>& RootObject, FUnrealAIUsage& OutUsage)
+	{
+		const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+		if (!RootObject->TryGetObjectField(TEXT("usage"), UsageObject) || !UsageObject || !UsageObject->IsValid())
+		{
+			return false;
+		}
+
+		(*UsageObject)->TryGetNumberField(TEXT("prompt_tokens"), OutUsage.PromptTokens);
+		(*UsageObject)->TryGetNumberField(TEXT("completion_tokens"), OutUsage.CompletionTokens);
+		(*UsageObject)->TryGetNumberField(TEXT("total_tokens"), OutUsage.TotalTokens);
+		return true;
+	}
+
+	bool ParseAnthropicUsage(const TSharedPtr<FJsonObject>& UsageObject, FUnrealAIUsage& OutUsage)
+	{
+		if (!UsageObject.IsValid())
+		{
+			return false;
+		}
+
+		UsageObject->TryGetNumberField(TEXT("input_tokens"), OutUsage.PromptTokens);
+		UsageObject->TryGetNumberField(TEXT("output_tokens"), OutUsage.CompletionTokens);
+		OutUsage.TotalTokens = OutUsage.PromptTokens + OutUsage.CompletionTokens;
+		return true;
+	}
+
+	bool ParseGeminiUsage(const TSharedPtr<FJsonObject>& RootObject, FUnrealAIUsage& OutUsage)
+	{
+		const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+		if (!RootObject->TryGetObjectField(TEXT("usageMetadata"), UsageObject) || !UsageObject || !UsageObject->IsValid())
+		{
+			return false;
+		}
+
+		(*UsageObject)->TryGetNumberField(TEXT("promptTokenCount"), OutUsage.PromptTokens);
+		(*UsageObject)->TryGetNumberField(TEXT("candidatesTokenCount"), OutUsage.CompletionTokens);
+		(*UsageObject)->TryGetNumberField(TEXT("totalTokenCount"), OutUsage.TotalTokens);
+		return true;
+	}
+
 	class FOpenAIProviderAdapter final : public IUnrealAIProviderAdapter
 	{
 	public:
@@ -297,6 +413,7 @@ namespace UnrealAIProviderAdapterPrivate
 			const FUnrealAIProviderConfig& ProviderConfig,
 			const FUnrealAIChatRequest& Request,
 			const FString& ApiKey,
+			EUnrealAIRequestMode RequestMode,
 			FUnrealAIHttpRequestData& OutRequest,
 			FUnrealAIError& OutError) const override
 		{
@@ -398,6 +515,10 @@ namespace UnrealAIProviderAdapterPrivate
 			{
 				return false;
 			}
+			if (RequestMode == EUnrealAIRequestMode::Stream)
+			{
+				Payload->SetBoolField(TEXT("stream"), true);
+			}
 
 			OutRequest = FUnrealAIHttpRequestData();
 			OutRequest.Url = BuildEndpointUrl(ProviderConfig.BaseUrl, TEXT("chat/completions"));
@@ -416,6 +537,10 @@ namespace UnrealAIProviderAdapterPrivate
 				OutRequest.Headers.Add(TEXT("OpenAI-Project"), ProviderConfig.ProjectId);
 			}
 			AddAdditionalHeaders(ProviderConfig, OutRequest);
+			if (RequestMode == EUnrealAIRequestMode::Stream)
+			{
+				AddStreamingHeaders(OutRequest);
+			}
 
 			if (!SerializeJsonObject(Payload, OutRequest.Body))
 			{
@@ -485,6 +610,141 @@ namespace UnrealAIProviderAdapterPrivate
 				}
 			}
 		}
+
+		virtual bool ParseStreamEvent(
+			const FUnrealAISseEvent& SseEvent,
+			FUnrealAIProviderStreamState& State,
+			TArray<FUnrealAIChatStreamEvent>& OutEvents,
+			FUnrealAIError& OutError) const override
+		{
+			OutError = FUnrealAIError();
+			if (SseEvent.Data.TrimStartAndEnd() == TEXT("[DONE]"))
+			{
+				State.bSawDataEvent = true;
+				State.bSawTerminalEvent = true;
+				return true;
+			}
+
+			TSharedPtr<FJsonObject> RootObject;
+			if (!ParseStreamJson(SseEvent, RootObject, OutError))
+			{
+				return false;
+			}
+			State.bSawDataEvent = true;
+
+			bool bHandled = false;
+			RootObject->TryGetStringField(TEXT("id"), State.Response.Id);
+			RootObject->TryGetStringField(TEXT("object"), State.Response.Object);
+			RootObject->TryGetStringField(TEXT("model"), State.Response.Model);
+			RootObject->TryGetNumberField(TEXT("created"), State.Response.CreatedUnixTime);
+
+			const TArray<TSharedPtr<FJsonValue>>* Choices = nullptr;
+			if (RootObject->TryGetArrayField(TEXT("choices"), Choices) && Choices)
+			{
+				for (const TSharedPtr<FJsonValue>& ChoiceValue : *Choices)
+				{
+					if (!ChoiceValue.IsValid() || ChoiceValue->Type != EJson::Object)
+					{
+						continue;
+					}
+
+					const TSharedPtr<FJsonObject> ChoiceObject = ChoiceValue->AsObject();
+					int32 ChoiceIndex = 0;
+					ChoiceObject->TryGetNumberField(TEXT("index"), ChoiceIndex);
+					FUnrealAIChatChoice& Choice = FindOrAddChoice(State.Response, ChoiceIndex);
+					const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
+					if (ChoiceObject->TryGetObjectField(TEXT("delta"), DeltaObject) && DeltaObject && DeltaObject->IsValid())
+					{
+						FString Role;
+						if ((*DeltaObject)->TryGetStringField(TEXT("role"), Role))
+						{
+							Choice.Role = Role;
+							bHandled = true;
+						}
+
+						FString TextDelta;
+						if ((*DeltaObject)->TryGetStringField(TEXT("content"), TextDelta))
+						{
+							bHandled = true;
+							if (!TextDelta.IsEmpty())
+							{
+								Choice.Content += TextDelta;
+								FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+									EUnrealAIChatStreamEventType::TextDelta, SseEvent, RootObject);
+								Event.ChoiceIndex = ChoiceIndex;
+								Event.Role = Choice.Role;
+								Event.TextDelta = TextDelta;
+								OutEvents.Add(MoveTemp(Event));
+							}
+						}
+						bool bHasProviderOnlyDelta = false;
+						for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DeltaObject)->Values)
+						{
+							if (Pair.Key != TEXT("role") && Pair.Key != TEXT("content"))
+							{
+								bHasProviderOnlyDelta = true;
+								break;
+							}
+						}
+						if (bHasProviderOnlyDelta)
+						{
+							FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+								EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject);
+							Event.ChoiceIndex = ChoiceIndex;
+							OutEvents.Add(MoveTemp(Event));
+							bHandled = true;
+						}
+					}
+
+					FString FinishReason;
+					if (ChoiceObject->TryGetStringField(TEXT("finish_reason"), FinishReason) && !FinishReason.IsEmpty())
+					{
+						Choice.FinishReason = FinishReason;
+						State.bSawFinishReason = true;
+						FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+							EUnrealAIChatStreamEventType::ChoiceFinished, SseEvent, RootObject);
+						Event.ChoiceIndex = ChoiceIndex;
+						Event.FinishReason = FinishReason;
+						OutEvents.Add(MoveTemp(Event));
+						bHandled = true;
+					}
+				}
+			}
+
+			if (ParseOpenAIUsage(RootObject, State.Response.Usage))
+			{
+				FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+					EUnrealAIChatStreamEventType::Usage, SseEvent, RootObject);
+				Event.Usage = State.Response.Usage;
+				OutEvents.Add(MoveTemp(Event));
+				bHandled = true;
+			}
+
+			if (!bHandled)
+			{
+				OutEvents.Add(MakeStreamEvent(EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+			}
+			return true;
+		}
+
+		virtual bool CanCompleteStream(const FUnrealAIProviderStreamState& State) const override
+		{
+			if (State.bSawTerminalEvent)
+			{
+				return true;
+			}
+
+			if (!State.bSawFinishReason || State.Response.Choices.Num() < State.ExpectedChoiceCount)
+			{
+				return false;
+			}
+
+			return !State.Response.Choices.ContainsByPredicate(
+				[](const FUnrealAIChatChoice& Choice)
+				{
+					return Choice.FinishReason.IsEmpty();
+				});
+		}
 	};
 
 	class FAnthropicProviderAdapter final : public IUnrealAIProviderAdapter
@@ -494,6 +754,7 @@ namespace UnrealAIProviderAdapterPrivate
 			const FUnrealAIProviderConfig& ProviderConfig,
 			const FUnrealAIChatRequest& Request,
 			const FString& ApiKey,
+			EUnrealAIRequestMode RequestMode,
 			FUnrealAIHttpRequestData& OutRequest,
 			FUnrealAIError& OutError) const override
 		{
@@ -641,6 +902,10 @@ namespace UnrealAIProviderAdapterPrivate
 			{
 				return false;
 			}
+			if (RequestMode == EUnrealAIRequestMode::Stream)
+			{
+				Payload->SetBoolField(TEXT("stream"), true);
+			}
 
 			OutRequest = FUnrealAIHttpRequestData();
 			OutRequest.Url = BuildEndpointUrl(ProviderConfig.BaseUrl, TEXT("messages"));
@@ -652,6 +917,10 @@ namespace UnrealAIProviderAdapterPrivate
 				OutRequest.Headers.Add(TEXT("x-api-key"), ApiKey);
 			}
 			AddAdditionalHeaders(ProviderConfig, OutRequest);
+			if (RequestMode == EUnrealAIRequestMode::Stream)
+			{
+				AddStreamingHeaders(OutRequest);
+			}
 
 			if (!SerializeJsonObject(Payload, OutRequest.Body))
 			{
@@ -724,6 +993,147 @@ namespace UnrealAIProviderAdapterPrivate
 				OutResponse.Usage.TotalTokens = OutResponse.Usage.PromptTokens + OutResponse.Usage.CompletionTokens;
 			}
 		}
+
+		virtual bool ParseStreamEvent(
+			const FUnrealAISseEvent& SseEvent,
+			FUnrealAIProviderStreamState& State,
+			TArray<FUnrealAIChatStreamEvent>& OutEvents,
+			FUnrealAIError& OutError) const override
+		{
+			OutError = FUnrealAIError();
+			TSharedPtr<FJsonObject> RootObject;
+			if (!ParseStreamJson(SseEvent, RootObject, OutError))
+			{
+				return false;
+			}
+			State.bSawDataEvent = true;
+
+			const FString EventType = ResolveProviderEventType(SseEvent, RootObject);
+			if (EventType == TEXT("ping"))
+			{
+				return true;
+			}
+			if (EventType == TEXT("error"))
+			{
+				OutError = ParseApiError(200, SseEvent.Data);
+				return false;
+			}
+
+			FUnrealAIChatChoice& Choice = FindOrAddChoice(State.Response, 0);
+			bool bHandled = false;
+			if (EventType == TEXT("message_start"))
+			{
+				const TSharedPtr<FJsonObject>* MessageObject = nullptr;
+				if (RootObject->TryGetObjectField(TEXT("message"), MessageObject) && MessageObject && MessageObject->IsValid())
+				{
+					(*MessageObject)->TryGetStringField(TEXT("id"), State.Response.Id);
+					(*MessageObject)->TryGetStringField(TEXT("type"), State.Response.Object);
+					(*MessageObject)->TryGetStringField(TEXT("model"), State.Response.Model);
+					(*MessageObject)->TryGetStringField(TEXT("role"), Choice.Role);
+
+					const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+					if ((*MessageObject)->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject && UsageObject->IsValid()
+						&& ParseAnthropicUsage(*UsageObject, State.Response.Usage))
+					{
+						FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+							EUnrealAIChatStreamEventType::Usage, SseEvent, RootObject);
+						Event.Usage = State.Response.Usage;
+						OutEvents.Add(MoveTemp(Event));
+					}
+				}
+				bHandled = true;
+			}
+			else if (EventType == TEXT("content_block_delta"))
+			{
+				const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
+				if (RootObject->TryGetObjectField(TEXT("delta"), DeltaObject) && DeltaObject && DeltaObject->IsValid())
+				{
+					FString DeltaType;
+					(*DeltaObject)->TryGetStringField(TEXT("type"), DeltaType);
+					FString TextDelta;
+					if (DeltaType == TEXT("text_delta") && (*DeltaObject)->TryGetStringField(TEXT("text"), TextDelta))
+					{
+						Choice.Content += TextDelta;
+						FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+							EUnrealAIChatStreamEventType::TextDelta, SseEvent, RootObject);
+						Event.TextDelta = TextDelta;
+						Event.Role = Choice.Role;
+						OutEvents.Add(MoveTemp(Event));
+					}
+					else
+					{
+						OutEvents.Add(MakeStreamEvent(
+							EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+					}
+				}
+				bHandled = true;
+			}
+			else if (EventType == TEXT("message_delta"))
+			{
+				const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
+				if (RootObject->TryGetObjectField(TEXT("delta"), DeltaObject) && DeltaObject && DeltaObject->IsValid())
+				{
+					FString FinishReason;
+					if ((*DeltaObject)->TryGetStringField(TEXT("stop_reason"), FinishReason) && !FinishReason.IsEmpty())
+					{
+						Choice.FinishReason = FinishReason;
+						State.bSawFinishReason = true;
+						FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+							EUnrealAIChatStreamEventType::ChoiceFinished, SseEvent, RootObject);
+						Event.FinishReason = FinishReason;
+						OutEvents.Add(MoveTemp(Event));
+					}
+				}
+
+				const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+				if (RootObject->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject && UsageObject->IsValid()
+					&& ParseAnthropicUsage(*UsageObject, State.Response.Usage))
+				{
+					FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+						EUnrealAIChatStreamEventType::Usage, SseEvent, RootObject);
+					Event.Usage = State.Response.Usage;
+					OutEvents.Add(MoveTemp(Event));
+				}
+				bHandled = true;
+			}
+			else if (EventType == TEXT("message_stop"))
+			{
+				State.bSawTerminalEvent = true;
+				bHandled = true;
+			}
+			else if (EventType == TEXT("content_block_start"))
+			{
+				bHandled = true;
+				const TSharedPtr<FJsonObject>* ContentBlock = nullptr;
+				FString ContentType;
+				if (RootObject->TryGetObjectField(TEXT("content_block"), ContentBlock) && ContentBlock && ContentBlock->IsValid())
+				{
+					(*ContentBlock)->TryGetStringField(TEXT("type"), ContentType);
+				}
+				if (!ContentType.IsEmpty() && ContentType != TEXT("text"))
+				{
+					OutEvents.Add(MakeStreamEvent(
+						EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+				}
+			}
+			else if (EventType == TEXT("content_block_stop"))
+			{
+				OutEvents.Add(MakeStreamEvent(
+					EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+				bHandled = true;
+			}
+
+			if (!bHandled)
+			{
+				OutEvents.Add(MakeStreamEvent(EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+			}
+			return true;
+		}
+
+		virtual bool CanCompleteStream(const FUnrealAIProviderStreamState& State) const override
+		{
+			return State.bSawTerminalEvent;
+		}
 	};
 
 	class FGeminiProviderAdapter final : public IUnrealAIProviderAdapter
@@ -733,6 +1143,7 @@ namespace UnrealAIProviderAdapterPrivate
 			const FUnrealAIProviderConfig& ProviderConfig,
 			const FUnrealAIChatRequest& Request,
 			const FString& ApiKey,
+			EUnrealAIRequestMode RequestMode,
 			FUnrealAIHttpRequestData& OutRequest,
 			FUnrealAIError& OutError) const override
 		{
@@ -888,9 +1299,12 @@ namespace UnrealAIProviderAdapterPrivate
 			FString PathModel = Model;
 			PathModel.RemoveFromStart(TEXT("models/"));
 			OutRequest = FUnrealAIHttpRequestData();
+			const FString Method = RequestMode == EUnrealAIRequestMode::Stream
+				? TEXT("streamGenerateContent?alt=sse")
+				: TEXT("generateContent");
 			OutRequest.Url = BuildEndpointUrl(
 				ProviderConfig.BaseUrl,
-				FString::Printf(TEXT("models/%s:generateContent"), *FGenericPlatformHttp::UrlEncode(PathModel)));
+				FString::Printf(TEXT("models/%s:%s"), *FGenericPlatformHttp::UrlEncode(PathModel), *Method));
 			OutRequest.ResolvedModel = Model;
 			AddCommonHeaders(OutRequest);
 			if (!ApiKey.IsEmpty())
@@ -898,6 +1312,10 @@ namespace UnrealAIProviderAdapterPrivate
 				OutRequest.Headers.Add(TEXT("x-goog-api-key"), ApiKey);
 			}
 			AddAdditionalHeaders(ProviderConfig, OutRequest);
+			if (RequestMode == EUnrealAIRequestMode::Stream)
+			{
+				AddStreamingHeaders(OutRequest);
+			}
 
 			if (!SerializeJsonObject(Payload, OutRequest.Body))
 			{
@@ -979,6 +1397,176 @@ namespace UnrealAIProviderAdapterPrivate
 					OutResponse.Choices.Add(Choice);
 				}
 			}
+		}
+
+		virtual bool ParseStreamEvent(
+			const FUnrealAISseEvent& SseEvent,
+			FUnrealAIProviderStreamState& State,
+			TArray<FUnrealAIChatStreamEvent>& OutEvents,
+			FUnrealAIError& OutError) const override
+		{
+			OutError = FUnrealAIError();
+			TSharedPtr<FJsonObject> RootObject;
+			if (!ParseStreamJson(SseEvent, RootObject, OutError))
+			{
+				return false;
+			}
+			State.bSawDataEvent = true;
+
+			State.Response.Object = TEXT("generateContent.response");
+			RootObject->TryGetStringField(TEXT("responseId"), State.Response.Id);
+			RootObject->TryGetStringField(TEXT("modelVersion"), State.Response.Model);
+			bool bHandled = false;
+			bool bHasProviderOnlyData = false;
+			bool bProviderEventEmitted = false;
+			int32 ProviderEventChoiceIndex = 0;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : RootObject->Values)
+			{
+				if (Pair.Key != TEXT("candidates")
+					&& Pair.Key != TEXT("usageMetadata")
+					&& Pair.Key != TEXT("modelVersion")
+					&& Pair.Key != TEXT("responseId"))
+				{
+					bHasProviderOnlyData = true;
+					break;
+				}
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* Candidates = nullptr;
+			if (RootObject->TryGetArrayField(TEXT("candidates"), Candidates) && Candidates)
+			{
+				for (const TSharedPtr<FJsonValue>& CandidateValue : *Candidates)
+				{
+					if (!CandidateValue.IsValid() || CandidateValue->Type != EJson::Object)
+					{
+						continue;
+					}
+
+					const TSharedPtr<FJsonObject> Candidate = CandidateValue->AsObject();
+					int32 ChoiceIndex = 0;
+					Candidate->TryGetNumberField(TEXT("index"), ChoiceIndex);
+					FUnrealAIChatChoice& Choice = FindOrAddChoice(State.Response, ChoiceIndex);
+					for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Candidate->Values)
+					{
+						if (Pair.Key != TEXT("index") && Pair.Key != TEXT("content") && Pair.Key != TEXT("finishReason"))
+						{
+							bHasProviderOnlyData = true;
+							ProviderEventChoiceIndex = ChoiceIndex;
+							break;
+						}
+					}
+
+					const TSharedPtr<FJsonObject>* ContentObject = nullptr;
+					if (Candidate->TryGetObjectField(TEXT("content"), ContentObject) && ContentObject && ContentObject->IsValid())
+					{
+						(*ContentObject)->TryGetStringField(TEXT("role"), Choice.Role);
+						for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ContentObject)->Values)
+						{
+							if (Pair.Key != TEXT("role") && Pair.Key != TEXT("parts"))
+							{
+								bHasProviderOnlyData = true;
+								ProviderEventChoiceIndex = ChoiceIndex;
+								break;
+							}
+						}
+						const TArray<TSharedPtr<FJsonValue>>* Parts = nullptr;
+						if ((*ContentObject)->TryGetArrayField(TEXT("parts"), Parts) && Parts)
+						{
+							for (const TSharedPtr<FJsonValue>& PartValue : *Parts)
+							{
+								if (!PartValue.IsValid() || PartValue->Type != EJson::Object)
+								{
+									continue;
+								}
+
+								const TSharedPtr<FJsonObject> PartObject = PartValue->AsObject();
+								FString TextDelta;
+								if (PartObject->TryGetStringField(TEXT("text"), TextDelta))
+								{
+									if (PartObject->Values.Num() > 1)
+									{
+										bHasProviderOnlyData = true;
+										ProviderEventChoiceIndex = ChoiceIndex;
+									}
+									Choice.Content += TextDelta;
+									FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+										EUnrealAIChatStreamEventType::TextDelta, SseEvent, RootObject);
+									Event.ChoiceIndex = ChoiceIndex;
+									Event.Role = Choice.Role;
+									Event.TextDelta = TextDelta;
+									OutEvents.Add(MoveTemp(Event));
+									bHandled = true;
+								}
+								else
+								{
+									FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+										EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject);
+									Event.ChoiceIndex = ChoiceIndex;
+									OutEvents.Add(MoveTemp(Event));
+									bProviderEventEmitted = true;
+									bHandled = true;
+								}
+							}
+						}
+					}
+
+					FString FinishReason;
+					if (Candidate->TryGetStringField(TEXT("finishReason"), FinishReason) && !FinishReason.IsEmpty())
+					{
+						Choice.FinishReason = FinishReason;
+						State.bSawFinishReason = true;
+						FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+							EUnrealAIChatStreamEventType::ChoiceFinished, SseEvent, RootObject);
+						Event.ChoiceIndex = ChoiceIndex;
+						Event.FinishReason = FinishReason;
+						OutEvents.Add(MoveTemp(Event));
+						bHandled = true;
+					}
+				}
+			}
+
+			if (ParseGeminiUsage(RootObject, State.Response.Usage))
+			{
+				const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+				if (RootObject->TryGetObjectField(TEXT("usageMetadata"), UsageObject) && UsageObject && UsageObject->IsValid())
+				{
+					for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*UsageObject)->Values)
+					{
+						if (Pair.Key != TEXT("promptTokenCount")
+							&& Pair.Key != TEXT("candidatesTokenCount")
+							&& Pair.Key != TEXT("totalTokenCount"))
+						{
+							bHasProviderOnlyData = true;
+							break;
+						}
+					}
+				}
+				FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+					EUnrealAIChatStreamEventType::Usage, SseEvent, RootObject);
+				Event.Usage = State.Response.Usage;
+				OutEvents.Add(MoveTemp(Event));
+				bHandled = true;
+			}
+
+			if (bHasProviderOnlyData && !bProviderEventEmitted)
+			{
+				FUnrealAIChatStreamEvent Event = MakeStreamEvent(
+					EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject);
+				Event.ChoiceIndex = ProviderEventChoiceIndex;
+				OutEvents.Add(MoveTemp(Event));
+				bProviderEventEmitted = true;
+			}
+
+			if (!bHandled && !bProviderEventEmitted)
+			{
+				OutEvents.Add(MakeStreamEvent(EUnrealAIChatStreamEventType::ProviderEvent, SseEvent, RootObject));
+			}
+			return true;
+		}
+
+		virtual bool CanCompleteStream(const FUnrealAIProviderStreamState& State) const override
+		{
+			return State.bSawDataEvent;
 		}
 	};
 }

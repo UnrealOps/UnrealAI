@@ -1,6 +1,6 @@
 ---
 name: unrealai-blueprints
-description: Design, explain, review, or debug Unreal Engine Blueprint integrations with UnrealAI, including one-shot chat completions, actor chat components, provider setup, result handling, and Blueprint validation. Use for Blueprint flows; use unrealai-cpp for native-only integrations.
+description: Design, explain, review, or debug Unreal Engine Blueprint integrations with UnrealAI, including one-shot or streaming chat, cancellation, actor chat components, provider setup, result handling, and Blueprint validation. Use for Blueprint flows; use unrealai-cpp for native-only integrations.
 ---
 
 # UnrealAI Blueprints
@@ -12,16 +12,18 @@ Use the nodes exposed by the UnrealAI plugin in the current checkout. Do not sub
 Treat the directory containing `UnrealAI.uplugin` as the plugin root. Confirm Blueprint exposure in these headers before documenting or changing a flow:
 
 - `Source/UnrealAI/Public/UnrealAIChatCompletionAsyncAction.h`
+- `Source/UnrealAI/Public/UnrealAIChatStreamAsyncAction.h`
 - `Source/UnrealAI/Public/UnrealAIChatComponent.h`
 - `Source/UnrealAI/Public/UnrealAIBlueprintLibrary.h`
 - `Source/UnrealAI/Public/UnrealAITypes.h`
 
-Read [references/blueprint-api.md](references/blueprint-api.md) whenever constructing, reviewing, or explaining a graph. It defines the real node names, pins, and two supported graph patterns.
+Read [references/blueprint-api.md](references/blueprint-api.md) whenever constructing, reviewing, or explaining a graph. It defines the real node names, pins, and supported one-shot, streaming, and component patterns.
 
 ## Choose the graph pattern
 
 - Use `Create Chat Completion (UnrealAI)` for a one-shot asynchronous request in a Level, Actor, Widget, or other Blueprint with a valid world context.
-- Use `UnrealAIChatComponent` for an actor that sends repeated prompts or owns a system prompt and sampling settings.
+- Use `Stream Chat Completion (UnrealAI)` when the graph needs incremental text, cancellation, or a partial aggregate after interruption.
+- Use `UnrealAIChatComponent` for an actor that sends repeated one-shot or streaming prompts or owns a system prompt and sampling settings.
 - Use `Make Chat Message` and `Send Messages` when the caller needs roles or multiple messages. Use `Make Simple Chat Request` or `Send Prompt` for the shortest text-only path.
 
 Preserve an existing graph's architecture unless the user asks to change it.
@@ -33,7 +35,10 @@ Preserve an existing graph's architecture unless the user asks to change it.
 - Leave `Model` empty to inherit the selected provider profile's default model.
 - Select `OpenAI`, `XAI`, `Anthropic`, or `Gemini` with the existing `Provider Name` pin/property; provider selection does not require provider-specific nodes.
 - Treat the response-format helper nodes as OpenAI-compatible features. Anthropic and Gemini currently normalize core text chat, not provider-independent tools, multimodal helpers, or structured output.
-- Do not enable `Stream`; streaming is not implemented.
+- Leave the deprecated request `Stream` field disabled. Select the dedicated one-shot or streaming node instead.
+- On a stream, append only `Text Delta` events to user-visible incremental text. Handle `Completed`, `Failed`, and `Cancelled` separately; failure and cancellation may carry a partial response.
+- Retain the streaming node's exposed `Async Action` output when cancellation is needed, and invoke its inherited `Cancel` function. For a component, use `Cancel Active Stream`.
+- Treat `Provider Event` raw JSON as provider-specific and potentially sensitive. Do not display or log it by default.
 - Never put an API key in a Blueprint variable, node default, screenshot, source asset, or packaged client. Use process variables or a project-root `.env` for local editor development, and a trusted backend for shipped clients.
 - Keep the graph platform-neutral. UnrealAI nodes do not require macOS-, Windows-, or Linux-specific branches.
 - Label conceptual diagrams as illustrations. Do not claim that a generated diagram is a literal Unreal Editor screenshot.
@@ -41,8 +46,8 @@ Preserve an existing graph's architecture unless the user asks to change it.
 ## Verify the result
 
 1. Compile the Blueprint and resolve every warning or broken pin introduced by the change.
-2. Exercise `Completed` and `Failed` handling in PIE without exposing credentials in logs or screenshots.
-3. For plugin changes, run the offline `UnrealAI.Blueprint.Helpers`, `UnrealAI.Blueprint.Surface`, and `UnrealAI.Response.FirstChoice` automation tests through the repository CI driver on the native host.
+2. Exercise all terminal paths used by the graph in PIE: `Completed` and `Failed` for one-shot work; `Completed`, `Failed`, and `Cancelled` for streams. Do not expose credentials or raw response data in logs or screenshots.
+3. For plugin changes, run the offline `UnrealAI.Blueprint.Helpers`, `UnrealAI.Blueprint.Surface`, `UnrealAI.Response.FirstChoice`, `UnrealAI.Streaming.SseParser`, and `UnrealAI.Streaming.ProviderAdapters` automation tests through the repository CI driver on the native host.
 4. Run `Scripts/ci/validate_plugin.py` with the host's Python 3 launcher from the plugin root when available.
 
 If a literal editor graph cannot be produced or opened, provide an exact node-and-pin recipe and clearly state that it still needs editor compilation.
