@@ -1,7 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UnrealAISseParser.h"
 #include "UnrealAITypes.h"
+
+enum class EUnrealAIRequestMode : uint8
+{
+	OneShot,
+	Stream
+};
 
 struct FUnrealAIHttpRequestData
 {
@@ -10,6 +17,15 @@ struct FUnrealAIHttpRequestData
 	TMap<FString, FString> Headers;
 	FString Body;
 	FString ResolvedModel;
+};
+
+struct FUnrealAIProviderStreamState
+{
+	FUnrealAIChatResponse Response;
+	int32 ExpectedChoiceCount = 1;
+	bool bSawDataEvent = false;
+	bool bSawTerminalEvent = false;
+	bool bSawFinishReason = false;
 };
 
 class IUnrealAIProviderAdapter
@@ -21,6 +37,7 @@ public:
 		const FUnrealAIProviderConfig& ProviderConfig,
 		const FUnrealAIChatRequest& Request,
 		const FString& ApiKey,
+		EUnrealAIRequestMode RequestMode,
 		FUnrealAIHttpRequestData& OutRequest,
 		FUnrealAIError& OutError) const = 0;
 
@@ -30,6 +47,14 @@ public:
 		const FString& RawJson,
 		FUnrealAIChatResponse& OutResponse,
 		FUnrealAIError& OutError) const = 0;
+
+	virtual bool ParseStreamEvent(
+		const FUnrealAISseEvent& SseEvent,
+		FUnrealAIProviderStreamState& State,
+		TArray<FUnrealAIChatStreamEvent>& OutEvents,
+		FUnrealAIError& OutError) const = 0;
+
+	virtual bool CanCompleteStream(const FUnrealAIProviderStreamState& State) const = 0;
 };
 
 namespace UnrealAIProviderAdapters
