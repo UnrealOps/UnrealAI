@@ -34,16 +34,44 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI")
 	FUnrealAIChatCompletionPin OnChatFailed;
 
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
+	FUnrealAIChatStreamEventPin OnChatStreamEvent;
+
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
+	FUnrealAIChatCompletionPin OnChatStreamCompleted;
+
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
+	FUnrealAIChatCompletionPin OnChatStreamFailed;
+
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
+	FUnrealAIChatStreamCancelledPin OnChatStreamCancelled;
+
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat")
 	void SendPrompt(const FString& Prompt);
 
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat")
 	void SendMessages(const TArray<FUnrealAIChatMessage>& Messages);
 
+	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat|Streaming")
+	void SendPromptStream(const FString& Prompt);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat|Streaming")
+	void SendMessagesStream(const TArray<FUnrealAIChatMessage>& Messages);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat|Streaming")
+	bool CancelActiveStream();
+
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 private:
 	UPROPERTY()
 	TObjectPtr<UUnrealAIClient> Client;
 
+	FUnrealAIRequestHandle ActiveStreamHandle;
+	bool bEndingPlay = false;
+
 	bool EnsureClient(FUnrealAIError& OutError);
 	void HandleCompletion(const FUnrealAIChatResponse& Response, const FUnrealAIError& Error);
+	void HandleStreamEvent(const FUnrealAIChatStreamEvent& Event);
+	void HandleStreamTerminal(const FUnrealAIChatStreamResult& Result);
 };

@@ -141,8 +141,8 @@ struct UNREALAI_API FUnrealAIChatRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output", meta = (MultiLine = true))
 	FString ResponseFormatJson;
 
-	/** Reserved for future SSE support. Non-streaming requests are currently supported end to end. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streaming")
+	/** Deprecated. Use StreamChatCompletion or the Stream Chat Completion Blueprint node. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streaming", meta = (DeprecatedProperty, DeprecationMessage = "Use the dedicated UnrealAI streaming API instead."))
 	bool bStream = false;
 
 	/** Optional JSON object merged into the root request payload after standard fields are written. */
@@ -240,5 +240,88 @@ struct UNREALAI_API FUnrealAIError
 	FString RawJson;
 };
 
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIRequestHandle
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Request")
+	FGuid Id;
+
+	bool IsValid() const
+	{
+		return Id.IsValid();
+	}
+};
+
+UENUM(BlueprintType)
+enum class EUnrealAIChatStreamEventType : uint8
+{
+	TextDelta UMETA(DisplayName = "Text Delta"),
+	ChoiceFinished UMETA(DisplayName = "Choice Finished"),
+	Usage UMETA(DisplayName = "Usage"),
+	ProviderEvent UMETA(DisplayName = "Provider Event")
+};
+
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIChatStreamEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	EUnrealAIChatStreamEventType Type = EUnrealAIChatStreamEventType::ProviderEvent;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	int32 ChoiceIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream", meta = (MultiLine = true))
+	FString TextDelta;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FString Role;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FString FinishReason;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FUnrealAIUsage Usage;
+
+	/** Native SSE event name or provider JSON event type when one is available. */
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FString ProviderEventType;
+
+	/** Provider event data. Treat this as potentially sensitive response content. */
+	UPROPERTY(BlueprintReadOnly, Category = "Stream", meta = (MultiLine = true))
+	FString RawJson;
+};
+
+UENUM(BlueprintType)
+enum class EUnrealAIChatStreamStatus : uint8
+{
+	Completed,
+	Failed,
+	Cancelled
+};
+
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIChatStreamResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	EUnrealAIChatStreamStatus Status = EUnrealAIChatStreamStatus::Failed;
+
+	/** Complete or partial response accumulated before the terminal state. */
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FUnrealAIChatResponse Response;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stream")
+	FUnrealAIError Error;
+};
+
 DECLARE_DELEGATE_TwoParams(FUnrealAIChatCompletionNativeDelegate, const FUnrealAIChatResponse& /*Response*/, const FUnrealAIError& /*Error*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamEventNativeDelegate, const FUnrealAIChatStreamEvent& /*Event*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamTerminalNativeDelegate, const FUnrealAIChatStreamResult& /*Result*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FUnrealAIChatCompletionPin, const FUnrealAIChatResponse&, Response, const FUnrealAIError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamEventPin, const FUnrealAIChatStreamEvent&, Event);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamCancelledPin, const FUnrealAIChatResponse&, PartialResponse);

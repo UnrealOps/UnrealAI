@@ -9,6 +9,7 @@ Use this reference with the public headers in the current checkout. The headers 
 | Built-in provider client | `UUnrealAIProviders` factory returning `UUnrealAIClient` | Retain as a `UPROPERTY` until callbacks finish |
 | Dynamic/custom provider client | `UUnrealAIClient` configuration or compatible factory | Retain as a `UPROPERTY` until callbacks finish |
 | Actor-owned prompt interface | `UUnrealAIChatComponent` | Create as a default subobject or owned component |
+| Incremental text stream | `UUnrealAIClient::StreamChatCompletion` | Retain the client; store its request handle when cancellation is needed |
 | Request and response helpers | `UUnrealAIBlueprintLibrary` | Static functions; no retained instance |
 
 ## Module dependency
@@ -121,6 +122,62 @@ void AMyAIActor::HandleChatCompletion(
 
 Change only the factory name to target XAI, Anthropic, or Gemini. For a runtime-selected profile, create the retained client with `NewObject<UUnrealAIClient>(this)` and call `ConfigureFromSettings` before submitting the request.
 
+## Native streaming example
+
+Declare a handle and two handlers on the same object that retains `UnrealAIClient`:
+
+```cpp
+FUnrealAIRequestHandle ActiveStream;
+FString StreamingText;
+
+void HandleStreamEvent(const FUnrealAIChatStreamEvent& Event);
+void HandleStreamTerminal(const FUnrealAIChatStreamResult& Result);
+```
+
+Start the dedicated stream after configuring the client:
+
+```cpp
+ActiveStream = UnrealAIClient->StreamChatCompletion(
+    Request,
+    FUnrealAIChatStreamEventNativeDelegate::CreateUObject(
+        this,
+        &AMyAIActor::HandleStreamEvent),
+    FUnrealAIChatStreamTerminalNativeDelegate::CreateUObject(
+        this,
+        &AMyAIActor::HandleStreamTerminal));
+
+void AMyAIActor::HandleStreamEvent(const FUnrealAIChatStreamEvent& Event)
+{
+    if (Event.Type == EUnrealAIChatStreamEventType::TextDelta)
+    {
+        StreamingText += Event.TextDelta;
+    }
+}
+
+void AMyAIActor::HandleStreamTerminal(const FUnrealAIChatStreamResult& Result)
+{
+    ActiveStream = FUnrealAIRequestHandle();
+
+    if (Result.Status == EUnrealAIChatStreamStatus::Failed)
+    {
+        UE_LOG(LogTemp, Error, TEXT("UnrealAI stream failed: %s"), *Result.Error.Message);
+        return;
+    }
+
+    if (Result.Status == EUnrealAIChatStreamStatus::Cancelled)
+    {
+        // Result.Response contains text accumulated before cancellation.
+        return;
+    }
+
+    // Result.Response is the completed normalized response.
+}
+```
+
+Call `UnrealAIClient->CancelRequest(ActiveStream)` on the game thread to cancel. A successful call synchronously emits the one terminal `Cancelled` result and preserves the partial normalized response. A false return means the handle was invalid, belonged to a stream that already ended, or was not active on this client.
+
+Event callbacks arrive in provider order on the game thread. Handle `TextDelta` for incremental text, `ChoiceFinished` for finish reasons, `Usage` for normalized token counts, and `ProviderEvent` only when provider-native non-text JSON is required. The terminal callback fires exactly once with `Completed`, `Failed`, or `Cancelled`; failed and cancelled results may contain a partial response.
+
 ## Request surface
 
 `FUnrealAIChatRequest` exposes a provider-neutral core:
@@ -130,7 +187,7 @@ Change only the factory name to target XAI, Anthropic, or Gemini. For a runtime-
 - number of choices and stop sequences
 - `ResponseFormatJson` for JSON object or JSON Schema output on OpenAI-compatible profiles
 - `AdditionalParametersJson` for provider-specific root fields
-- `bStream`, which must remain false in the current implementation
+- deprecated `bStream`; leave it false and select `CreateChatCompletion` or `StreamChatCompletion` explicitly
 
 `FUnrealAIChatMessage` exposes the standard role and string content plus:
 
@@ -146,6 +203,8 @@ System/developer messages, user/assistant text, temperature, top-p, output-token
 
 Create `UUnrealAIChatComponent` as a default subobject, configure `ProviderName`, `Model`, `SystemPrompt`, and optional temperature, then bind `OnChatCompleted` and `OnChatFailed`. Call `SendPrompt` for a single user message or `SendMessages` for a prepared history.
 
+For streaming, bind `OnChatStreamEvent`, `OnChatStreamCompleted`, `OnChatStreamFailed`, and `OnChatStreamCancelled`, then call `SendPromptStream` or `SendMessagesStream`. `CancelActiveStream` cancels the current stream. A component owns at most one active stream, so starting a second stream reports `stream_already_active` through `OnChatStreamFailed`.
+
 Because the component owns its client, callers do not need a separate `UUnrealAIClient` property for this pattern.
 
 ## Error and response handling
@@ -153,6 +212,7 @@ Because the component owns its client, callers do not need a separate `UUnrealAI
 - Check `Error.bIsError` first. Useful fields include `HttpStatus`, `Message`, `Type`, `Code`, `Param`, and `RawJson`.
 - Use `GetFirstChoiceContent(Response, bHasContent)` for the common text path.
 - Use `Response.Choices`, `Response.Usage`, or `Response.RawJson` only when the caller needs lower-level data.
+- Aggregate stream results intentionally leave `Response.RawJson` empty because no single provider JSON object represents the full stream. Individual stream events may expose provider content in `RawJson`.
 - Do not log authorization headers, environment values, or full request data that may contain user-sensitive content.
 
 ## Cross-platform verification

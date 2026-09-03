@@ -31,13 +31,23 @@ SKILL_CONTRACTS = {
             "UUnrealAIProviders",
             "ConfigureFromSettings",
             "CreateChatCompletion",
+            "StreamChatCompletion",
+            "CancelRequest",
             "OpenAICompatibleFromProfile",
             "UUnrealAIChatComponent",
             "SendPrompt",
             "SendMessages",
+            "SendPromptStream",
+            "SendMessagesStream",
+            "CancelActiveStream",
             "FUnrealAIChatRequest",
             "FUnrealAIChatResponse",
             "FUnrealAIError",
+            "FUnrealAIRequestHandle",
+            "FUnrealAIChatStreamEvent",
+            "FUnrealAIChatStreamResult",
+            "EUnrealAIChatStreamEventType",
+            "EUnrealAIChatStreamStatus",
             "GetFirstChoiceContent",
             "MakeJsonObjectResponseFormat",
             "MakeStrictJsonSchemaResponseFormat",
@@ -46,8 +56,13 @@ SKILL_CONTRACTS = {
             "UPROPERTY",
             "ConfigureFromSettings",
             "CreateChatCompletion",
+            "StreamChatCompletion",
+            "CancelRequest",
             "GetFirstChoiceContent",
             "bStream",
+            "TextDelta",
+            "ProviderEvent",
+            "Cancelled",
             "Anthropic",
             "Gemini",
         },
@@ -56,6 +71,8 @@ SKILL_CONTRACTS = {
         "reference": "references/blueprint-api.md",
         "symbols": {
             "CreateChatCompletion",
+            "UUnrealAIChatStreamAsyncAction",
+            "StreamChatCompletion",
             "MakeChatMessage",
             "MakeSimpleChatRequest",
             "GetFirstChoiceContent",
@@ -66,17 +83,29 @@ SKILL_CONTRACTS = {
             "UUnrealAIChatComponent",
             "SendPrompt",
             "SendMessages",
+            "SendPromptStream",
+            "SendMessagesStream",
+            "CancelActiveStream",
             "OnChatCompleted",
             "OnChatFailed",
+            "OnChatStreamEvent",
+            "OnChatStreamCompleted",
+            "OnChatStreamFailed",
+            "OnChatStreamCancelled",
             "EUnrealAIProviderApi",
         },
         "claims": {
             "Create Chat Completion (UnrealAI)",
+            "Stream Chat Completion (UnrealAI)",
             "Make Simple Chat Request",
             "Get First Choice Content",
             "UnrealAIChatComponent",
             "Completed",
             "Failed",
+            "Cancelled",
+            "Async Action",
+            "Text Delta",
+            "Provider Event",
             "Has Content",
             "Anthropic",
             "Gemini",
@@ -237,11 +266,37 @@ def validate_shared_api_claims(errors: list[str]) -> None:
         if f'TEXT("{source_value}")' not in SETTINGS_SOURCE:
             add_error(errors, f"Provider setting used by the skills is missing from source: {source_value}")
 
-    if "if (Request.bStream)" not in CLIENT_SOURCE or "Streaming chat completions are not implemented" not in CLIENT_SOURCE:
-        add_error(errors, "Skills describe streaming as unavailable, but the implementation contract changed.")
+    stream_client_contract = {
+        "StreamChatCompletion",
+        "CancelRequest",
+        "SetResponseBodyReceiveStreamDelegateV2",
+        "EUnrealAIChatStreamStatus::Completed",
+        "EUnrealAIChatStreamStatus::Failed",
+        "EUnrealAIChatStreamStatus::Cancelled",
+    }
+    for source_value in stream_client_contract:
+        if source_value not in CLIENT_SOURCE:
+            add_error(errors, f"Streaming behavior used by the skills is missing from the client: {source_value}")
+
+    stream_public_contract = {
+        "DeprecatedProperty",
+        'DisplayName = "Stream Chat Completion (UnrealAI)"',
+        "FUnrealAIChatStreamEvent",
+        "FUnrealAIChatStreamResult",
+        "SendPromptStream",
+        "SendMessagesStream",
+        "CancelActiveStream",
+    }
+    for source_value in stream_public_contract:
+        if source_value not in PUBLIC_SOURCE:
+            add_error(errors, f"Streaming API used by the skills is missing from public headers: {source_value}")
 
     if '"UnrealAI.Blueprint.Surface"' not in AUTOMATION_TEST_SOURCE:
         add_error(errors, "The Blueprint skill requires the native Blueprint surface automation contract.")
+
+    for test_id in ("UnrealAI.Streaming.SseParser", "UnrealAI.Streaming.ProviderAdapters"):
+        if f'"{test_id}"' not in AUTOMATION_TEST_SOURCE:
+            add_error(errors, f"The skills require the native streaming automation contract: {test_id}")
 
     if 'DisplayName = "Create Chat Completion (UnrealAI)"' not in PUBLIC_SOURCE:
         add_error(errors, "The Blueprint skill's async-node display name no longer matches the public header.")

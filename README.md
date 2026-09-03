@@ -35,8 +35,9 @@ UnrealAI is a provider-neutral Unreal Engine runtime plugin for adding generativ
 - **Structured output support** — request JSON objects or strict JSON Schema responses from compatible OpenAI endpoints.
 - **Extensible payloads** — pass provider-native content and request fields through raw JSON extension points.
 - **Runtime-only dependencies** — built on Unreal Engine's HTTP and JSON modules with no third-party runtime library.
+- **Provider-neutral SSE streaming** — receive ordered text, finish, usage, and raw provider events with cancellation and an accumulated result.
 
-UnrealAI currently implements non-streaming text generation through three protocol adapters. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
+UnrealAI implements one-shot and streaming text generation through three protocol adapters. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
 
 ## 📋 Requirements
 
@@ -99,6 +100,7 @@ Add `.env` to the consuming project's `.gitignore`. Never commit API keys or pla
 ### 2. Choose an integration
 
 - For a one-shot Blueprint request, use `Create Chat Completion (UnrealAI)`.
+- For incremental Blueprint text, use `Stream Chat Completion (UnrealAI)` and retain its `Async Action` output when cancellation is needed.
 - For an actor that sends repeated prompts, add an `UnrealAIChatComponent`.
 - For native systems, create and retain a `UUnrealAIClient`.
 
@@ -120,6 +122,10 @@ The illustration shows the shortest success path:
 4. Connect `Failed` to `Break UnrealAIError` in the real graph and handle its `Message` value.
 
 For actor-centric gameplay, add an `UnrealAIChatComponent`, configure its `Provider Name`, optional `Model`, and `System Prompt`, then call `Send Prompt`. Bind `On Chat Completed` and `On Chat Failed` to receive results.
+
+For streaming, replace the one-shot node with `Stream Chat Completion (UnrealAI)`. Append `Event.Text Delta` when `Event.Type` is `Text Delta`, use `Completed` for the normalized final response, and handle `Failed` and `Cancelled` separately. The node exposes an `Async Action` proxy whose `Cancel` function stops the HTTP stream and sends the partial response through `Cancelled`.
+
+The chat component offers the same flow through `Send Prompt Stream`, `On Chat Stream Event`, `On Chat Stream Completed`, `On Chat Stream Failed`, `On Chat Stream Cancelled`, and `Cancel Active Stream`. A component owns one active stream at a time.
 
 ## 🧩 C++ usage
 
@@ -146,6 +152,9 @@ public:
 private:
     UPROPERTY()
     TObjectPtr<UUnrealAIClient> UnrealAIClient;
+
+    FUnrealAIRequestHandle ActiveStream;
+    FString StreamingText;
 
     void HandleChatCompletion(
         const FUnrealAIChatResponse& Response,
@@ -204,6 +213,34 @@ void AMyAIActor::HandleChatCompletion(
 
 Switch the factory call to `XAI`, `Anthropic`, or `Gemini` without changing the request or callback. Pass a model as the third argument to override that provider's default for the client. `OpenAICompatibleFromProfile` selects a named compatible profile, while `OpenAICompatible` accepts a complete runtime configuration.
 
+To stream the same request, bind an incremental event callback and a terminal callback. Retain both the client and returned handle while the request is active:
+
+```cpp
+ActiveStream = UnrealAIClient->StreamChatCompletion(
+    Request,
+    FUnrealAIChatStreamEventNativeDelegate::CreateWeakLambda(
+        this,
+        [this](const FUnrealAIChatStreamEvent& Event)
+        {
+            if (Event.Type == EUnrealAIChatStreamEventType::TextDelta)
+            {
+                StreamingText += Event.TextDelta;
+            }
+        }),
+    FUnrealAIChatStreamTerminalNativeDelegate::CreateWeakLambda(
+        this,
+        [this](const FUnrealAIChatStreamResult& Result)
+        {
+            ActiveStream = FUnrealAIRequestHandle();
+            if (Result.Status == EUnrealAIChatStreamStatus::Failed)
+            {
+                UE_LOG(LogTemp, Error, TEXT("UnrealAI stream failed: %s"), *Result.Error.Message);
+            }
+        }));
+```
+
+Call `UnrealAIClient->CancelRequest(ActiveStream)` to stop it. A terminal result with status `Completed` contains the fully accumulated normalized response; `Failed` and `Cancelled` retain whatever response was accumulated first. Stream callbacks are delivered in order on the game thread.
+
 ## 🔌 Provider configuration
 
 UnrealAI includes these profiles by default:
@@ -232,13 +269,13 @@ GEMINI_MODEL=gemini-3.7-flash
 
 For backward compatibility, the XAI profile falls back to `OPENAI_BASE_URL` and `OPENAI_MODEL` only when its `XAI_*` overrides are unset. Custom profiles can target other OpenAI-compatible providers or local gateways by selecting the OpenAI-compatible protocol. API-key overrides stored directly in project settings are supported for development, but environment variables or a trusted server are safer choices.
 
-The shared request covers text messages, system instructions, temperature, top-p, output-token limits, and stop sequences across the native adapters. Provider-specific raw JSON uses that provider's native schema. Choice counts and `ResponseFormatJson` remain OpenAI-compatible features; normalized tool calls, multimodal helpers, and structured-output helpers for Anthropic and Gemini are not implemented yet.
+The shared request covers text messages, system instructions, temperature, top-p, output-token limits, and stop sequences across the native adapters. Provider-specific raw JSON uses that provider's native schema. Streaming normalizes text deltas, choice completion, usage, and errors; non-text provider events remain available as `Provider Event` values with raw JSON. Choice counts and `ResponseFormatJson` remain OpenAI-compatible features; normalized tool calls, reasoning, multimodal helpers, and structured-output helpers for Anthropic and Gemini are not implemented yet.
 
 ## 🗺️ Features and roadmap
 
 | Capability | Status |
 | --- | --- |
-| Non-streaming OpenAI-compatible Chat Completions | Available |
+| One-shot OpenAI-compatible Chat Completions | Available |
 | Native Anthropic Messages | Available |
 | Native Gemini `generateContent` | Available |
 | C++ provider factories | Available |
@@ -247,7 +284,7 @@ The shared request covers text messages, system instructions, temperature, top-p
 | Native C++ callback client | Available |
 | JSON object and strict JSON Schema response helpers | Available |
 | Raw JSON request and message extensions | Available |
-| SSE streaming | Planned |
+| Provider-neutral SSE text streaming and cancellation | Available |
 | Responses API abstraction | Planned |
 | Image, audio, and embedding helpers | Planned |
 | Built-in retry and backoff policy | Planned |

@@ -7,10 +7,13 @@
 #include "UnrealAIBlueprintLibrary.h"
 #include "UnrealAIChatCompletionAsyncAction.h"
 #include "UnrealAIChatComponent.h"
+#include "UnrealAIChatStreamAsyncAction.h"
 #include "UnrealAIClient.h"
 #include "UnrealAIProviderAdapter.h"
 #include "UnrealAIProviders.h"
 #include "UnrealAISettings.h"
+#include "UnrealAISseParser.h"
+#include "UnrealAIStreamChunkQueue.h"
 #include "UObject/UnrealType.h"
 
 namespace UnrealAIAutomationTestsPrivate
@@ -228,6 +231,7 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 			OpenAIConfig,
 			OpenAIRequest,
 			TEXT("openai-test-key"),
+			EUnrealAIRequestMode::OneShot,
 			OpenAIHttpRequest,
 			OpenAIBuildError));
 	TestFalse(TEXT("OpenAI-compatible request construction has no error"), OpenAIBuildError.bIsError);
@@ -286,6 +290,7 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 			AnthropicConfig,
 			Request,
 			TEXT("anthropic-test-key"),
+			EUnrealAIRequestMode::OneShot,
 			AnthropicRequest,
 			AnthropicBuildError));
 	TestFalse(TEXT("Anthropic request construction has no error"), AnthropicBuildError.bIsError);
@@ -343,6 +348,7 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 			GeminiConfig,
 			Request,
 			TEXT("gemini-test-key"),
+			EUnrealAIRequestMode::OneShot,
 			GeminiRequest,
 			GeminiBuildError));
 	TestFalse(TEXT("Gemini request construction has no error"), GeminiBuildError.bIsError);
@@ -409,6 +415,338 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Provider error messages are parsed"), ProviderError.Message, FString(TEXT("Invalid request")));
 	TestEqual(TEXT("Provider error types are parsed"), ProviderError.Type, FString(TEXT("INVALID_ARGUMENT")));
 	TestEqual(TEXT("Numeric provider error codes are normalized"), ProviderError.Code, FString(TEXT("400")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAISseParserTest,
+	"UnrealAI.Streaming.SseParser",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAISseParserTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString Source =
+		TEXT(": heartbeat\r\nevent: content\r\ndata: {\"text\":\"hé\"}\r\n")
+		TEXT("data: second line\r\nid: event-1\r\n\r\ndata: final\n\n");
+	const FTCHARToUTF8 Utf8(*Source);
+	FUnrealAISseParser Parser;
+	TArray<FUnrealAISseEvent> Events;
+	FUnrealAIError Error;
+	for (int32 Index = 0; Index < Utf8.Length(); ++Index)
+	{
+		if (!Parser.Append(reinterpret_cast<const uint8*>(Utf8.Get()) + Index, 1, Events, Error))
+		{
+			break;
+		}
+	}
+	TestFalse(TEXT("Fragmented SSE input parses without error"), Error.bIsError);
+	TestTrue(TEXT("Finishing a complete SSE stream succeeds"), Parser.Finish(Events, Error));
+	TestEqual(TEXT("Comments do not create events"), Events.Num(), 2);
+	if (Events.Num() == 2)
+	{
+		TestEqual(TEXT("Named event type is preserved"), Events[0].EventType, FString(TEXT("content")));
+		TestEqual(
+			TEXT("Multiline SSE data is joined with a newline"),
+			Events[0].Data,
+			FString(TEXT("{\"text\":\"hé\"}\nsecond line")));
+		TestEqual(TEXT("SSE event IDs are preserved"), Events[0].Id, FString(TEXT("event-1")));
+		TestEqual(TEXT("Unnamed events default to message"), Events[1].EventType, FString(TEXT("message")));
+		TestEqual(TEXT("Final event data is preserved"), Events[1].Data, FString(TEXT("final")));
+	}
+
+	TArray<uint8> Oversized;
+	Oversized.SetNumZeroed(FUnrealAISseParser::MaxEventBytes + 1);
+	FUnrealAISseParser OversizedParser;
+	TArray<FUnrealAISseEvent> IgnoredEvents;
+	FUnrealAIError OversizedError;
+	TestFalse(
+		TEXT("Oversized SSE events are rejected"),
+		OversizedParser.Append(Oversized.GetData(), Oversized.Num(), IgnoredEvents, OversizedError));
+	TestEqual(TEXT("Oversized SSE error has a stable code"), OversizedError.Code, FString(TEXT("invalid_sse")));
+
+	const FString LargeData = FString::ChrN(600 * 1024, TEXT('x'));
+	const FString MultipleLargeEvents =
+		FString::Printf(TEXT("data: %s\n\ndata: %s\n\n"), *LargeData, *LargeData);
+	const FTCHARToUTF8 MultipleLargeUtf8(*MultipleLargeEvents);
+	FUnrealAISseParser MultipleLargeParser;
+	TArray<FUnrealAISseEvent> MultipleLargeParsedEvents;
+	FUnrealAIError MultipleLargeError;
+	TestTrue(
+		TEXT("A large network chunk containing individually bounded events is accepted"),
+		MultipleLargeParser.Append(
+			reinterpret_cast<const uint8*>(MultipleLargeUtf8.Get()),
+			MultipleLargeUtf8.Length(),
+			MultipleLargeParsedEvents,
+			MultipleLargeError));
+	TestEqual(TEXT("Both bounded events are emitted"), MultipleLargeParsedEvents.Num(), 2);
+
+	const FString FragmentedData = FString::ChrN(64 * 1024, TEXT('y'));
+	const FString FragmentedEvent = FString::Printf(TEXT("data: %s\r\n\r\n"), *FragmentedData);
+	const FTCHARToUTF8 FragmentedUtf8(*FragmentedEvent);
+	FUnrealAISseParser FragmentedParser;
+	TArray<FUnrealAISseEvent> FragmentedEvents;
+	FUnrealAIError FragmentedError;
+	for (int32 Index = 0; Index < FragmentedUtf8.Length(); ++Index)
+	{
+		if (!FragmentedParser.Append(
+			reinterpret_cast<const uint8*>(FragmentedUtf8.Get()) + Index,
+			1,
+			FragmentedEvents,
+			FragmentedError))
+		{
+			break;
+		}
+	}
+	TestFalse(TEXT("A long byte-fragmented SSE event parses without error"), FragmentedError.bIsError);
+	TestTrue(TEXT("A long byte-fragmented SSE stream finishes"), FragmentedParser.Finish(FragmentedEvents, FragmentedError));
+	TestEqual(TEXT("The fragmented stream emits one event"), FragmentedEvents.Num(), 1);
+	if (FragmentedEvents.Num() == 1)
+	{
+		TestEqual(TEXT("The fragmented event preserves its full data field"), FragmentedEvents[0].Data, FragmentedData);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAIStreamChunkQueueTest,
+	"UnrealAI.Streaming.ChunkQueue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAIStreamChunkQueueTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const uint8 FirstChunk[] = {1, 2, 3};
+	const uint8 SecondChunk[] = {4, 5};
+	FUnrealAIStreamChunkQueue Queue(4);
+	TestTrue(TEXT("A chunk within the pending byte limit is accepted"), Queue.Enqueue(FirstChunk, 3));
+	TestEqual(TEXT("The queue tracks accepted bytes"), Queue.GetQueuedByteCount(), int64(3));
+	TestFalse(TEXT("A chunk that would exceed the pending byte limit is rejected"), Queue.Enqueue(SecondChunk, 2));
+	TestEqual(TEXT("A rejected chunk does not change the queued byte count"), Queue.GetQueuedByteCount(), int64(3));
+
+	TArray<TArray<uint8>> DrainedChunks;
+	Queue.Drain(DrainedChunks);
+	TestTrue(TEXT("Draining empties the pending queue"), Queue.IsEmpty());
+	TestEqual(TEXT("Draining resets the queued byte count"), Queue.GetQueuedByteCount(), int64(0));
+	TestEqual(TEXT("Draining preserves accepted chunks"), DrainedChunks.Num(), 1);
+	if (DrainedChunks.Num() == 1)
+	{
+		TestEqual(TEXT("The accepted chunk retains its bytes"), DrainedChunks[0].Num(), 3);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAIStreamingAdaptersTest,
+	"UnrealAI.Streaming.ProviderAdapters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAIStreamingAdaptersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FUnrealAIChatRequest Request;
+	FUnrealAIChatMessage Message;
+	Message.Content = TEXT("Hello");
+	Request.Messages.Add(Message);
+	Request.AdditionalParametersJson = TEXT("{\"stream\":false}");
+
+	FUnrealAIProviderConfig OpenAIConfig;
+	OpenAIConfig.Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
+	OpenAIConfig.BaseUrl = TEXT("https://compatible.example/v1");
+	OpenAIConfig.DefaultModel = TEXT("test-model");
+	FUnrealAIHttpRequestData OpenAIRequest;
+	FUnrealAIError BuildError;
+	TestTrue(
+		TEXT("OpenAI-compatible streaming request builds"),
+		UnrealAIProviderAdapters::Get(OpenAIConfig.Api).BuildRequest(
+			OpenAIConfig,
+			Request,
+			TEXT("test-key"),
+			EUnrealAIRequestMode::Stream,
+			OpenAIRequest,
+			BuildError));
+	TestEqual(
+		TEXT("Streaming requests ask for SSE"),
+		OpenAIRequest.Headers.FindRef(TEXT("Accept")),
+		FString(TEXT("text/event-stream")));
+	TSharedPtr<FJsonObject> OpenAIPayload;
+	TestTrue(TEXT("OpenAI stream payload is JSON"), UnrealAIAutomationTestsPrivate::ParseJsonObject(OpenAIRequest.Body, OpenAIPayload));
+	if (OpenAIPayload.IsValid())
+	{
+		bool bStream = false;
+		TestTrue(TEXT("OpenAI stream flag is present"), OpenAIPayload->TryGetBoolField(TEXT("stream"), bStream));
+		TestTrue(TEXT("The dedicated API forces stream after additional parameters merge"), bStream);
+	}
+
+	const IUnrealAIProviderAdapter& OpenAIAdapter = UnrealAIProviderAdapters::Get(OpenAIConfig.Api);
+	FUnrealAIProviderStreamState OpenAIState;
+	OpenAIState.Response.Model = TEXT("test-model");
+	TArray<FUnrealAIChatStreamEvent> OpenAIEvents;
+	FUnrealAIError ParseError;
+	const TArray<FUnrealAISseEvent> OpenAIFrames = {
+		{TEXT("message"), TEXT("{\"id\":\"chatcmpl-1\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello \"},\"finish_reason\":null}]}"), FString()},
+		{TEXT("message"), TEXT("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"},\"finish_reason\":\"stop\"}]}"), FString()},
+		{TEXT("message"), TEXT("{\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4}}"), FString()},
+		{TEXT("message"), TEXT("[DONE]"), FString()}
+	};
+	for (const FUnrealAISseEvent& Frame : OpenAIFrames)
+	{
+		TestTrue(TEXT("OpenAI stream frame parses"), OpenAIAdapter.ParseStreamEvent(Frame, OpenAIState, OpenAIEvents, ParseError));
+	}
+	TestTrue(TEXT("OpenAI stream reaches a terminal state"), OpenAIAdapter.CanCompleteStream(OpenAIState));
+	TestEqual(TEXT("OpenAI stream creates one choice"), OpenAIState.Response.Choices.Num(), 1);
+	if (OpenAIState.Response.Choices.Num() == 1)
+	{
+		TestEqual(TEXT("OpenAI deltas accumulate"), OpenAIState.Response.Choices[0].Content, FString(TEXT("Hello world")));
+		TestEqual(TEXT("OpenAI finish reason accumulates"), OpenAIState.Response.Choices[0].FinishReason, FString(TEXT("stop")));
+	}
+	TestEqual(TEXT("OpenAI stream usage accumulates"), OpenAIState.Response.Usage.TotalTokens, 4);
+
+	FUnrealAIProviderStreamState MultiChoiceOpenAIState;
+	MultiChoiceOpenAIState.ExpectedChoiceCount = 2;
+	TArray<FUnrealAIChatStreamEvent> MultiChoiceEvents;
+	TestTrue(
+		TEXT("The first choice finish parses"),
+		OpenAIAdapter.ParseStreamEvent(
+			{TEXT("message"), TEXT("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"), FString()},
+			MultiChoiceOpenAIState,
+			MultiChoiceEvents,
+			ParseError));
+	TestFalse(
+		TEXT("A multi-choice compatible stream does not complete after only one choice finishes"),
+		OpenAIAdapter.CanCompleteStream(MultiChoiceOpenAIState));
+	TestTrue(
+		TEXT("The second choice finish parses"),
+		OpenAIAdapter.ParseStreamEvent(
+			{TEXT("message"), TEXT("{\"choices\":[{\"index\":1,\"delta\":{},\"finish_reason\":\"stop\"}]}"), FString()},
+			MultiChoiceOpenAIState,
+			MultiChoiceEvents,
+			ParseError));
+	TestTrue(
+		TEXT("A compatible stream may complete after every expected choice finishes"),
+		OpenAIAdapter.CanCompleteStream(MultiChoiceOpenAIState));
+
+	FUnrealAIProviderConfig AnthropicConfig;
+	AnthropicConfig.Api = EUnrealAIProviderApi::AnthropicMessages;
+	AnthropicConfig.BaseUrl = TEXT("https://api.anthropic.com/v1");
+	AnthropicConfig.DefaultModel = TEXT("claude-test");
+	FUnrealAIHttpRequestData AnthropicRequest;
+	Request.AdditionalParametersJson.Reset();
+	TestTrue(
+		TEXT("Anthropic streaming request builds"),
+		UnrealAIProviderAdapters::Get(AnthropicConfig.Api).BuildRequest(
+			AnthropicConfig,
+			Request,
+			TEXT("test-key"),
+			EUnrealAIRequestMode::Stream,
+			AnthropicRequest,
+			BuildError));
+	TSharedPtr<FJsonObject> AnthropicPayload;
+	TestTrue(TEXT("Anthropic stream payload is JSON"), UnrealAIAutomationTestsPrivate::ParseJsonObject(AnthropicRequest.Body, AnthropicPayload));
+	if (AnthropicPayload.IsValid())
+	{
+		bool bStream = false;
+		TestTrue(TEXT("Anthropic stream flag is present"), AnthropicPayload->TryGetBoolField(TEXT("stream"), bStream));
+		TestTrue(TEXT("Anthropic streaming is enabled"), bStream);
+	}
+
+	const IUnrealAIProviderAdapter& AnthropicAdapter = UnrealAIProviderAdapters::Get(AnthropicConfig.Api);
+	FUnrealAIProviderStreamState AnthropicState;
+	TArray<FUnrealAIChatStreamEvent> AnthropicEvents;
+	const TArray<FUnrealAISseEvent> AnthropicFrames = {
+		{TEXT("message_start"), TEXT("{\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}"), FString()},
+		{TEXT("ping"), TEXT("{\"type\":\"ping\"}"), FString()},
+		{TEXT("content_block_delta"), TEXT("{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}"), FString()},
+		{TEXT("content_block_start"), TEXT("{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}"), FString()},
+		{TEXT("content_block_delta"), TEXT("{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hidden\"}}"), FString()},
+		{TEXT("content_block_stop"), TEXT("{\"type\":\"content_block_stop\",\"index\":1}"), FString()},
+		{TEXT("message_delta"), TEXT("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}"), FString()},
+		{TEXT("message_stop"), TEXT("{\"type\":\"message_stop\"}"), FString()}
+	};
+	for (const FUnrealAISseEvent& Frame : AnthropicFrames)
+	{
+		TestTrue(TEXT("Anthropic stream frame parses"), AnthropicAdapter.ParseStreamEvent(Frame, AnthropicState, AnthropicEvents, ParseError));
+	}
+	TestTrue(TEXT("Anthropic requires and sees message_stop"), AnthropicAdapter.CanCompleteStream(AnthropicState));
+	TestEqual(TEXT("Anthropic text deltas accumulate"), AnthropicState.Response.Choices[0].Content, FString(TEXT("Hello")));
+	TestEqual(TEXT("Anthropic cumulative usage is normalized"), AnthropicState.Response.Usage.TotalTokens, 4);
+	TestTrue(
+		TEXT("Non-text Anthropic deltas remain visible as provider events"),
+		AnthropicEvents.ContainsByPredicate([](const FUnrealAIChatStreamEvent& Event)
+		{
+			return Event.Type == EUnrealAIChatStreamEventType::ProviderEvent;
+		}));
+	TestTrue(
+		TEXT("Anthropic content block closure remains visible as a provider event"),
+		AnthropicEvents.ContainsByPredicate([](const FUnrealAIChatStreamEvent& Event)
+		{
+			return Event.Type == EUnrealAIChatStreamEventType::ProviderEvent
+				&& Event.ProviderEventType == TEXT("content_block_stop")
+				&& Event.RawJson.Contains(TEXT("\"index\":1"));
+		}));
+
+	FUnrealAIProviderConfig GeminiConfig;
+	GeminiConfig.Api = EUnrealAIProviderApi::GeminiGenerateContent;
+	GeminiConfig.BaseUrl = TEXT("https://generativelanguage.googleapis.com/v1beta");
+	GeminiConfig.DefaultModel = TEXT("models/gemini-test");
+	FUnrealAIHttpRequestData GeminiRequest;
+	TestTrue(
+		TEXT("Gemini streaming request builds"),
+		UnrealAIProviderAdapters::Get(GeminiConfig.Api).BuildRequest(
+			GeminiConfig,
+			Request,
+			TEXT("test-key"),
+			EUnrealAIRequestMode::Stream,
+			GeminiRequest,
+			BuildError));
+	TestEqual(
+		TEXT("Gemini uses streamGenerateContent SSE endpoint"),
+		GeminiRequest.Url,
+		FString(TEXT("https://generativelanguage.googleapis.com/v1beta/models/gemini-test:streamGenerateContent?alt=sse")));
+
+	const IUnrealAIProviderAdapter& GeminiAdapter = UnrealAIProviderAdapters::Get(GeminiConfig.Api);
+	FUnrealAIProviderStreamState GeminiState;
+	TArray<FUnrealAIChatStreamEvent> GeminiEvents;
+	const TArray<FUnrealAISseEvent> GeminiFrames = {
+		{TEXT("message"), TEXT("{\"responseId\":\"response-1\",\"modelVersion\":\"gemini-test\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello \"}]}}]}"), FString()},
+		{TEXT("message"), TEXT("{\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"world\"}]},\"finishReason\":\"STOP\",\"safetyRatings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"probability\":\"NEGLIGIBLE\"}],\"groundingMetadata\":{\"webSearchQueries\":[\"example\"]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":2,\"totalTokenCount\":4}}"), FString()}
+	};
+	for (const FUnrealAISseEvent& Frame : GeminiFrames)
+	{
+		TestTrue(TEXT("Gemini stream frame parses"), GeminiAdapter.ParseStreamEvent(Frame, GeminiState, GeminiEvents, ParseError));
+	}
+	TestTrue(TEXT("Gemini completes at successful HTTP EOF"), GeminiAdapter.CanCompleteStream(GeminiState));
+	TestEqual(TEXT("Gemini text chunks accumulate"), GeminiState.Response.Choices[0].Content, FString(TEXT("Hello world")));
+	TestEqual(TEXT("Gemini usage is normalized"), GeminiState.Response.Usage.TotalTokens, 4);
+	TestTrue(
+		TEXT("Gemini metadata accompanying normalized text remains visible as a provider event"),
+		GeminiEvents.ContainsByPredicate([](const FUnrealAIChatStreamEvent& Event)
+		{
+			return Event.Type == EUnrealAIChatStreamEventType::ProviderEvent
+				&& Event.RawJson.Contains(TEXT("groundingMetadata"))
+				&& Event.RawJson.Contains(TEXT("safetyRatings"));
+		}));
+	FUnrealAIProviderStreamState EmptyGeminiState;
+	TestFalse(TEXT("Gemini requires at least one valid data event"), GeminiAdapter.CanCompleteStream(EmptyGeminiState));
+
+	FUnrealAIProviderStreamState TruncatedAnthropicState;
+	TestFalse(TEXT("Anthropic streams without message_stop are incomplete"), AnthropicAdapter.CanCompleteStream(TruncatedAnthropicState));
+	FUnrealAIError ProviderStreamError;
+	TArray<FUnrealAIChatStreamEvent> IgnoredEvents;
+	TestFalse(
+		TEXT("Provider errors inside an Anthropic stream fail parsing"),
+		AnthropicAdapter.ParseStreamEvent(
+			{TEXT("error"), TEXT("{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"), FString()},
+			TruncatedAnthropicState,
+			IgnoredEvents,
+			ProviderStreamError));
+	TestTrue(TEXT("In-stream provider errors are surfaced"), ProviderStreamError.bIsError);
 
 	return true;
 }
@@ -482,12 +820,67 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 #endif
 	}
 
+	const UFunction* StreamRequest = UUnrealAIChatStreamAsyncAction::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, StreamChatCompletion));
+	TestNotNull(TEXT("Stream Chat Completion is reflected"), StreamRequest);
+	if (StreamRequest)
+	{
+		TestTrue(TEXT("Stream Chat Completion is Blueprint callable"), StreamRequest->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+#if WITH_METADATA
+		TestEqual(
+			TEXT("Stream Chat Completion has the documented display name"),
+			StreamRequest->GetMetaData(TEXT("DisplayName")),
+			FString(TEXT("Stream Chat Completion (UnrealAI)")));
+#endif
+	}
+
+	const UFunction* CancelStreamRequest = UUnrealAIChatStreamAsyncAction::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Cancel));
+	TestNotNull(TEXT("The streaming async action exposes cancellation"), CancelStreamRequest);
+	if (CancelStreamRequest)
+	{
+		TestTrue(TEXT("Async stream cancellation is Blueprint callable"), CancelStreamRequest->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+	}
+
+	for (const FName DelegateName : {
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Event),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Completed),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Failed),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Cancelled)})
+	{
+		const FMulticastDelegateProperty* Delegate = FindFProperty<FMulticastDelegateProperty>(
+			UUnrealAIChatStreamAsyncAction::StaticClass(), DelegateName);
+		TestNotNull(*FString::Printf(TEXT("Streaming async delegate %s is reflected"), *DelegateName.ToString()), Delegate);
+		if (Delegate)
+		{
+			TestTrue(
+				*FString::Printf(TEXT("Streaming async delegate %s is Blueprint assignable"), *DelegateName.ToString()),
+				Delegate->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+		}
+	}
+
 	const UFunction* SendPrompt = UUnrealAIChatComponent::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatComponent, SendPrompt));
 	TestNotNull(TEXT("Send Prompt is reflected"), SendPrompt);
 	if (SendPrompt)
 	{
 		TestTrue(TEXT("Send Prompt is Blueprint callable"), SendPrompt->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+	}
+
+	const UFunction* SendPromptStream = UUnrealAIChatComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatComponent, SendPromptStream));
+	TestNotNull(TEXT("Send Prompt Stream is reflected"), SendPromptStream);
+	if (SendPromptStream)
+	{
+		TestTrue(TEXT("Send Prompt Stream is Blueprint callable"), SendPromptStream->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+	}
+
+	const UFunction* CancelActiveStream = UUnrealAIChatComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatComponent, CancelActiveStream));
+	TestNotNull(TEXT("Cancel Active Stream is reflected"), CancelActiveStream);
+	if (CancelActiveStream)
+	{
+		TestTrue(TEXT("Cancel Active Stream is Blueprint callable"), CancelActiveStream->HasAnyFunctionFlags(FUNC_BlueprintCallable));
 	}
 
 	const FMulticastDelegateProperty* Completed = FindFProperty<FMulticastDelegateProperty>(
@@ -506,6 +899,39 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 	if (Failed)
 	{
 		TestTrue(TEXT("On Chat Failed is Blueprint assignable"), Failed->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+	}
+
+	const FMulticastDelegateProperty* StreamEvent = FindFProperty<FMulticastDelegateProperty>(
+		UUnrealAIChatComponent::StaticClass(),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatStreamEvent));
+	TestNotNull(TEXT("On Chat Stream Event is reflected"), StreamEvent);
+	if (StreamEvent)
+	{
+		TestTrue(TEXT("On Chat Stream Event is Blueprint assignable"), StreamEvent->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+	}
+
+	const FMulticastDelegateProperty* StreamCancelled = FindFProperty<FMulticastDelegateProperty>(
+		UUnrealAIChatComponent::StaticClass(),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatStreamCancelled));
+	TestNotNull(TEXT("On Chat Stream Cancelled is reflected"), StreamCancelled);
+	if (StreamCancelled)
+	{
+		TestTrue(TEXT("On Chat Stream Cancelled is Blueprint assignable"), StreamCancelled->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+	}
+
+	for (const FName DelegateName : {
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatStreamCompleted),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatStreamFailed)})
+	{
+		const FMulticastDelegateProperty* Delegate = FindFProperty<FMulticastDelegateProperty>(
+			UUnrealAIChatComponent::StaticClass(), DelegateName);
+		TestNotNull(*FString::Printf(TEXT("Component stream delegate %s is reflected"), *DelegateName.ToString()), Delegate);
+		if (Delegate)
+		{
+			TestTrue(
+				*FString::Printf(TEXT("Component stream delegate %s is Blueprint assignable"), *DelegateName.ToString()),
+				Delegate->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+		}
 	}
 
 	return true;
