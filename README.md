@@ -36,6 +36,7 @@ UnrealAI is a provider-neutral Unreal Engine runtime plugin for adding generativ
 - **Extensible payloads** — pass provider-native content and request fields through raw JSON extension points.
 - **Runtime-only dependencies** — built on Unreal Engine's HTTP and JSON modules with no third-party runtime library.
 - **Provider-neutral SSE streaming** — receive ordered text, finish, usage, and raw provider events with cancellation and an accumulated result.
+- **Built-in retry and backoff** — recover from transient transport and provider failures with bounded exponential backoff, jitter, `Retry-After` support, notifications, and cancellation.
 
 UnrealAI implements one-shot and streaming text generation through three protocol adapters. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
 
@@ -123,9 +124,9 @@ The illustration shows the shortest success path:
 
 For actor-centric gameplay, add an `UnrealAIChatComponent`, configure its `Provider Name`, optional `Model`, and `System Prompt`, then call `Send Prompt`. Bind `On Chat Completed` and `On Chat Failed` to receive results.
 
-For streaming, replace the one-shot node with `Stream Chat Completion (UnrealAI)`. Append `Event.Text Delta` when `Event.Type` is `Text Delta`, use `Completed` for the normalized final response, and handle `Failed` and `Cancelled` separately. The node exposes an `Async Action` proxy whose `Cancel` function stops the HTTP stream and sends the partial response through `Cancelled`.
+For streaming, replace the one-shot node with `Stream Chat Completion (UnrealAI)`. Append `Event.Text Delta` when `Event.Type` is `Text Delta`, use `Completed` for the normalized final response, and handle `Failed` and `Cancelled` separately. Both async nodes expose `Retrying` while waiting to try a transient failure again, plus an `Async Action` proxy whose `Cancel` function stops an active request or pending retry. Stream cancellation sends the partial response through `Cancelled`.
 
-The chat component offers the same flow through `Send Prompt Stream`, `On Chat Stream Event`, `On Chat Stream Completed`, `On Chat Stream Failed`, `On Chat Stream Cancelled`, and `Cancel Active Stream`. A component owns one active stream at a time.
+The chat component offers the same flow through `On Chat Retrying`, `On Chat Stream Retrying`, `Send Prompt Stream`, `On Chat Stream Event`, `On Chat Stream Completed`, `On Chat Stream Failed`, `On Chat Stream Cancelled`, and `Cancel Active Stream`. `Cancel Active Completions` stops all current one-shot requests. A component owns one active stream at a time.
 
 ## 🧩 C++ usage
 
@@ -153,12 +154,14 @@ private:
     UPROPERTY()
     TObjectPtr<UUnrealAIClient> UnrealAIClient;
 
+    FUnrealAIRequestHandle ActiveCompletion;
     FUnrealAIRequestHandle ActiveStream;
     FString StreamingText;
 
     void HandleChatCompletion(
         const FUnrealAIChatResponse& Response,
         const FUnrealAIError& Error);
+    void HandleRetry(const FUnrealAIRetryEvent& RetryEvent);
 };
 ```
 
@@ -183,17 +186,21 @@ void AMyAIActor::AskUnrealAI()
         UUnrealAIBlueprintLibrary::MakeSimpleChatRequest(
             TEXT("Describe this level in one sentence."));
 
-    UnrealAIClient->CreateChatCompletion(
+    ActiveCompletion = UnrealAIClient->CreateChatCompletion(
         Request,
         FUnrealAIChatCompletionNativeDelegate::CreateUObject(
             this,
-            &AMyAIActor::HandleChatCompletion));
+            &AMyAIActor::HandleChatCompletion),
+        FUnrealAIRetryNativeDelegate::CreateUObject(
+            this,
+            &AMyAIActor::HandleRetry));
 }
 
 void AMyAIActor::HandleChatCompletion(
     const FUnrealAIChatResponse& Response,
     const FUnrealAIError& Error)
 {
+    ActiveCompletion = FUnrealAIRequestHandle();
     if (Error.bIsError)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealAI request failed: %s"), *Error.Message);
@@ -208,6 +215,17 @@ void AMyAIActor::HandleChatCompletion(
     {
         UE_LOG(LogTemp, Log, TEXT("UnrealAI: %s"), *Content);
     }
+}
+
+void AMyAIActor::HandleRetry(const FUnrealAIRetryEvent& RetryEvent)
+{
+    UE_LOG(
+        LogTemp,
+        Verbose,
+        TEXT("UnrealAI retry %d/%d in %.2f seconds"),
+        RetryEvent.RetryNumber,
+        RetryEvent.MaxRetries,
+        RetryEvent.DelaySeconds);
 }
 ```
 
@@ -239,7 +257,9 @@ ActiveStream = UnrealAIClient->StreamChatCompletion(
         }));
 ```
 
-Call `UnrealAIClient->CancelRequest(ActiveStream)` to stop it. A terminal result with status `Completed` contains the fully accumulated normalized response; `Failed` and `Cancelled` retain whatever response was accumulated first. Stream callbacks are delivered in order on the game thread.
+Call `UnrealAIClient->CancelRequest(ActiveCompletion)` or `CancelRequest(ActiveStream)` to stop an active request or pending retry. One-shot cancellation completes with `Error.Code == "request_cancelled"`. A stream terminal result with status `Completed` contains the fully accumulated normalized response; `Failed` and `Cancelled` retain whatever response was accumulated first. Stream callbacks are delivered in order on the game thread.
+
+Every provider profile defaults to two retries with a one-second initial delay and a 60-second delay ceiling. `FUnrealAIProviderConfig::RetryPolicy` configures a client, while `FUnrealAIChatRequest::RetryOptions` can inherit it, disable retries, or override the retry count for one request. Retry notifications include the logical request handle for correlation. See the [plugin guide](Documentation/README.md#retry-and-backoff) for the exact retry contract.
 
 ## 🔌 Provider configuration
 
@@ -252,7 +272,7 @@ UnrealAI includes these profiles by default:
 | Anthropic | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
 | Gemini | Gemini `generateContent` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.7-flash` | `GEMINI_API_KEY` |
 
-Manage profiles under **Project Settings → Plugins → UnrealAI**. Each profile defines its API protocol, base URL, model, authentication variable, timeout, and additional HTTP headers.
+Manage profiles under **Project Settings → Plugins → UnrealAI**. Each profile defines its API protocol, base URL, model, authentication variable, timeout, retry policy, and additional HTTP headers.
 
 Each built-in profile recognizes provider-specific optional overrides:
 
@@ -285,9 +305,9 @@ The shared request covers text messages, system instructions, temperature, top-p
 | JSON object and strict JSON Schema response helpers | Available |
 | Raw JSON request and message extensions | Available |
 | Provider-neutral SSE text streaming and cancellation | Available |
+| Built-in retry and backoff policy | Available |
 | Responses API abstraction | Planned |
 | Image, audio, and embedding helpers | Planned |
-| Built-in retry and backoff policy | Planned |
 
 ## 🤖 Agent skills
 

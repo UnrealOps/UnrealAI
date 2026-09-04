@@ -33,6 +33,7 @@ SKILL_CONTRACTS = {
             "CreateChatCompletion",
             "StreamChatCompletion",
             "CancelRequest",
+            "CancelActiveCompletions",
             "OpenAICompatibleFromProfile",
             "UUnrealAIChatComponent",
             "SendPrompt",
@@ -44,6 +45,11 @@ SKILL_CONTRACTS = {
             "FUnrealAIChatResponse",
             "FUnrealAIError",
             "FUnrealAIRequestHandle",
+            "FUnrealAIRetryPolicy",
+            "FUnrealAIRequestRetryOptions",
+            "FUnrealAIRetryEvent",
+            "EUnrealAIRetryMode",
+            "EUnrealAIRetryReason",
             "FUnrealAIChatStreamEvent",
             "FUnrealAIChatStreamResult",
             "EUnrealAIChatStreamEventType",
@@ -62,6 +68,8 @@ SKILL_CONTRACTS = {
             "bStream",
             "TextDelta",
             "ProviderEvent",
+            "RetryOptions",
+            "Retrying",
             "Cancelled",
             "Anthropic",
             "Gemini",
@@ -85,13 +93,17 @@ SKILL_CONTRACTS = {
             "SendMessages",
             "SendPromptStream",
             "SendMessagesStream",
+            "CancelActiveCompletions",
             "CancelActiveStream",
             "OnChatCompleted",
             "OnChatFailed",
+            "OnChatCancelled",
+            "OnChatRetrying",
             "OnChatStreamEvent",
             "OnChatStreamCompleted",
             "OnChatStreamFailed",
             "OnChatStreamCancelled",
+            "OnChatStreamRetrying",
             "EUnrealAIProviderApi",
         },
         "claims": {
@@ -104,6 +116,8 @@ SKILL_CONTRACTS = {
             "Failed",
             "Cancelled",
             "Async Action",
+            "Retrying",
+            "Retry Options",
             "Text Delta",
             "Provider Event",
             "Has Content",
@@ -273,6 +287,7 @@ def validate_shared_api_claims(errors: list[str]) -> None:
         "EUnrealAIChatStreamStatus::Completed",
         "EUnrealAIChatStreamStatus::Failed",
         "EUnrealAIChatStreamStatus::Cancelled",
+        "TryScheduleRetry",
     }
     for source_value in stream_client_contract:
         if source_value not in CLIENT_SOURCE:
@@ -286,6 +301,9 @@ def validate_shared_api_claims(errors: list[str]) -> None:
         "SendPromptStream",
         "SendMessagesStream",
         "CancelActiveStream",
+        "CancelActiveCompletions",
+        "FUnrealAIRetryEvent",
+        "FUnrealAIRequestRetryOptions",
     }
     for source_value in stream_public_contract:
         if source_value not in PUBLIC_SOURCE:
@@ -294,7 +312,12 @@ def validate_shared_api_claims(errors: list[str]) -> None:
     if '"UnrealAI.Blueprint.Surface"' not in AUTOMATION_TEST_SOURCE:
         add_error(errors, "The Blueprint skill requires the native Blueprint surface automation contract.")
 
-    for test_id in ("UnrealAI.Streaming.SseParser", "UnrealAI.Streaming.ProviderAdapters"):
+    for test_id in (
+        "UnrealAI.Retry.Policy",
+        "UnrealAI.Retry.Coordinator",
+        "UnrealAI.Streaming.SseParser",
+        "UnrealAI.Streaming.ProviderAdapters",
+    ):
         if f'"{test_id}"' not in AUTOMATION_TEST_SOURCE:
             add_error(errors, f"The skills require the native streaming automation contract: {test_id}")
 
