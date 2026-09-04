@@ -28,11 +28,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnrealAI|Sampling", meta = (EditCondition = "bUseTemperature", ClampMin = "0.0", ClampMax = "2.0"))
 	float Temperature = 1.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnrealAI|Reliability")
+	FUnrealAIRequestRetryOptions RetryOptions;
+
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI")
 	FUnrealAIChatCompletionPin OnChatCompleted;
 
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI")
 	FUnrealAIChatCompletionPin OnChatFailed;
+
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI")
+	FUnrealAIChatCompletionPin OnChatCancelled;
+
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Retry")
+	FUnrealAIRetryPin OnChatRetrying;
 
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
 	FUnrealAIChatStreamEventPin OnChatStreamEvent;
@@ -46,11 +55,18 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming")
 	FUnrealAIChatStreamCancelledPin OnChatStreamCancelled;
 
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Streaming|Retry")
+	FUnrealAIRetryPin OnChatStreamRetrying;
+
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat")
 	void SendPrompt(const FString& Prompt);
 
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat")
 	void SendMessages(const TArray<FUnrealAIChatMessage>& Messages);
+
+	/** Cancels every one-shot completion currently owned by this component. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat")
+	int32 CancelActiveCompletions();
 
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat|Streaming")
 	void SendPromptStream(const FString& Prompt);
@@ -68,10 +84,13 @@ private:
 	TObjectPtr<UUnrealAIClient> Client;
 
 	FUnrealAIRequestHandle ActiveStreamHandle;
+	TMap<FGuid, FUnrealAIRequestHandle> ActiveCompletionHandles;
 	bool bEndingPlay = false;
 
 	bool EnsureClient(FUnrealAIError& OutError);
-	void HandleCompletion(const FUnrealAIChatResponse& Response, const FUnrealAIError& Error);
+	void HandleCompletion(FGuid CompletionId, const FUnrealAIChatResponse& Response, const FUnrealAIError& Error);
+	void HandleRetry(const FUnrealAIRetryEvent& RetryEvent);
 	void HandleStreamEvent(const FUnrealAIChatStreamEvent& Event);
+	void HandleStreamRetry(const FUnrealAIRetryEvent& RetryEvent);
 	void HandleStreamTerminal(const FUnrealAIChatStreamResult& Result);
 };

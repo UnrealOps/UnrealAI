@@ -21,26 +21,82 @@ void UUnrealAIChatCompletionAsyncAction::Activate()
 		return;
 	}
 
-	Client->CreateChatCompletion(PendingRequest, FUnrealAIChatCompletionNativeDelegate::CreateUObject(this, &UUnrealAIChatCompletionAsyncAction::HandleCompletion));
+	RequestHandle = Client->CreateChatCompletion(
+		PendingRequest,
+		FUnrealAIChatCompletionNativeDelegate::CreateUObject(this, &UUnrealAIChatCompletionAsyncAction::HandleCompletion),
+		FUnrealAIRetryNativeDelegate::CreateUObject(this, &UUnrealAIChatCompletionAsyncAction::HandleRetry));
+}
+
+void UUnrealAIChatCompletionAsyncAction::Cancel()
+{
+	if (bTerminal)
+	{
+		Super::Cancel();
+		return;
+	}
+
+	if (Client && RequestHandle.IsValid() && Client->CancelRequest(RequestHandle))
+	{
+		return;
+	}
+
+	bTerminal = true;
+	FUnrealAIChatResponse EmptyResponse;
+	FUnrealAIError Error;
+	Error.bIsError = true;
+	Error.Type = TEXT("request_cancelled");
+	Error.Code = TEXT("request_cancelled");
+	Error.Message = TEXT("The UnrealAI request was cancelled.");
+	if (ShouldBroadcastDelegates())
+	{
+		Cancelled.Broadcast(EmptyResponse, Error);
+	}
+	Super::Cancel();
 }
 
 void UUnrealAIChatCompletionAsyncAction::HandleCompletion(const FUnrealAIChatResponse& Response, const FUnrealAIError& Error)
 {
-	if (Error.bIsError)
+	if (bTerminal)
+	{
+		return;
+	}
+	bTerminal = true;
+
+	if (ShouldBroadcastDelegates() && Error.Code == TEXT("request_cancelled"))
+	{
+		Cancelled.Broadcast(Response, Error);
+	}
+	else if (ShouldBroadcastDelegates() && Error.bIsError)
 	{
 		Failed.Broadcast(Response, Error);
 	}
-	else
+	else if (ShouldBroadcastDelegates())
 	{
 		Completed.Broadcast(Response, Error);
 	}
 
-	SetReadyToDestroy();
+	Super::Cancel();
+}
+
+void UUnrealAIChatCompletionAsyncAction::HandleRetry(const FUnrealAIRetryEvent& RetryEvent)
+{
+	if (!bTerminal && ShouldBroadcastDelegates())
+	{
+		Retrying.Broadcast(RetryEvent);
+	}
 }
 
 void UUnrealAIChatCompletionAsyncAction::BroadcastFailure(const FUnrealAIError& Error)
 {
+	if (bTerminal)
+	{
+		return;
+	}
+	bTerminal = true;
 	FUnrealAIChatResponse EmptyResponse;
-	Failed.Broadcast(EmptyResponse, Error);
-	SetReadyToDestroy();
+	if (ShouldBroadcastDelegates())
+	{
+		Failed.Broadcast(EmptyResponse, Error);
+	}
+	Super::Cancel();
 }
