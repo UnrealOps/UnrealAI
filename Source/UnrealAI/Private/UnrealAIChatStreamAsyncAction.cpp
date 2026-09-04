@@ -27,7 +27,8 @@ void UUnrealAIChatStreamAsyncAction::Activate()
 	RequestHandle = Client->StreamChatCompletion(
 		PendingRequest,
 		FUnrealAIChatStreamEventNativeDelegate::CreateUObject(this, &UUnrealAIChatStreamAsyncAction::HandleEvent),
-		FUnrealAIChatStreamTerminalNativeDelegate::CreateUObject(this, &UUnrealAIChatStreamAsyncAction::HandleTerminal));
+		FUnrealAIChatStreamTerminalNativeDelegate::CreateUObject(this, &UUnrealAIChatStreamAsyncAction::HandleTerminal),
+		FUnrealAIRetryNativeDelegate::CreateUObject(this, &UUnrealAIChatStreamAsyncAction::HandleRetry));
 }
 
 void UUnrealAIChatStreamAsyncAction::Cancel()
@@ -57,6 +58,14 @@ void UUnrealAIChatStreamAsyncAction::HandleEvent(const FUnrealAIChatStreamEvent&
 	if (!bTerminal && ShouldBroadcastDelegates())
 	{
 		Event.Broadcast(StreamEvent);
+	}
+}
+
+void UUnrealAIChatStreamAsyncAction::HandleRetry(const FUnrealAIRetryEvent& RetryEvent)
+{
+	if (!bTerminal && ShouldBroadcastDelegates())
+	{
+		Retrying.Broadcast(RetryEvent);
 	}
 }
 

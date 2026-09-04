@@ -40,8 +40,42 @@ void UUnrealAIChatComponent::SendMessages(const TArray<FUnrealAIChatMessage>& Me
 	Request.Messages = Messages;
 	Request.bUseTemperature = bUseTemperature;
 	Request.Temperature = Temperature;
+	Request.RetryOptions = RetryOptions;
 
-	Client->CreateChatCompletion(Request, FUnrealAIChatCompletionNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleCompletion));
+	const FGuid CompletionId = FGuid::NewGuid();
+	const FUnrealAIRequestHandle RequestHandle = Client->CreateChatCompletion(
+		Request,
+		FUnrealAIChatCompletionNativeDelegate::CreateWeakLambda(
+			this,
+			[this, CompletionId](const FUnrealAIChatResponse& Response, const FUnrealAIError& Error)
+			{
+				HandleCompletion(CompletionId, Response, Error);
+			}),
+		FUnrealAIRetryNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleRetry));
+	if (RequestHandle.IsValid())
+	{
+		ActiveCompletionHandles.Add(CompletionId, RequestHandle);
+	}
+}
+
+int32 UUnrealAIChatComponent::CancelActiveCompletions()
+{
+	if (!Client || ActiveCompletionHandles.IsEmpty())
+	{
+		return 0;
+	}
+
+	TArray<FUnrealAIRequestHandle> Handles;
+	ActiveCompletionHandles.GenerateValueArray(Handles);
+	int32 CancelledCount = 0;
+	for (const FUnrealAIRequestHandle& Handle : Handles)
+	{
+		if (Client->CancelRequest(Handle))
+		{
+			++CancelledCount;
+		}
+	}
+	return CancelledCount;
 }
 
 void UUnrealAIChatComponent::SendPromptStream(const FString& Prompt)
@@ -89,10 +123,12 @@ void UUnrealAIChatComponent::SendMessagesStream(const TArray<FUnrealAIChatMessag
 	Request.Messages = Messages;
 	Request.bUseTemperature = bUseTemperature;
 	Request.Temperature = Temperature;
+	Request.RetryOptions = RetryOptions;
 	ActiveStreamHandle = Client->StreamChatCompletion(
 		Request,
 		FUnrealAIChatStreamEventNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleStreamEvent),
-		FUnrealAIChatStreamTerminalNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleStreamTerminal));
+		FUnrealAIChatStreamTerminalNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleStreamTerminal),
+		FUnrealAIRetryNativeDelegate::CreateUObject(this, &UUnrealAIChatComponent::HandleStreamRetry));
 }
 
 bool UUnrealAIChatComponent::CancelActiveStream()
@@ -110,9 +146,22 @@ bool UUnrealAIChatComponent::EnsureClient(FUnrealAIError& OutError)
 	return Client->ConfigureFromSettings(ProviderName, OutError);
 }
 
-void UUnrealAIChatComponent::HandleCompletion(const FUnrealAIChatResponse& Response, const FUnrealAIError& Error)
+void UUnrealAIChatComponent::HandleCompletion(
+	FGuid CompletionId,
+	const FUnrealAIChatResponse& Response,
+	const FUnrealAIError& Error)
 {
-	if (Error.bIsError)
+	ActiveCompletionHandles.Remove(CompletionId);
+	if (bEndingPlay)
+	{
+		return;
+	}
+
+	if (Error.Code == TEXT("request_cancelled"))
+	{
+		OnChatCancelled.Broadcast(Response, Error);
+	}
+	else if (Error.bIsError)
 	{
 		OnChatFailed.Broadcast(Response, Error);
 	}
@@ -122,11 +171,27 @@ void UUnrealAIChatComponent::HandleCompletion(const FUnrealAIChatResponse& Respo
 	}
 }
 
+void UUnrealAIChatComponent::HandleRetry(const FUnrealAIRetryEvent& RetryEvent)
+{
+	if (!bEndingPlay)
+	{
+		OnChatRetrying.Broadcast(RetryEvent);
+	}
+}
+
 void UUnrealAIChatComponent::HandleStreamEvent(const FUnrealAIChatStreamEvent& Event)
 {
 	if (!bEndingPlay)
 	{
 		OnChatStreamEvent.Broadcast(Event);
+	}
+}
+
+void UUnrealAIChatComponent::HandleStreamRetry(const FUnrealAIRetryEvent& RetryEvent)
+{
+	if (!bEndingPlay)
+	{
+		OnChatStreamRetrying.Broadcast(RetryEvent);
 	}
 }
 
@@ -156,6 +221,8 @@ void UUnrealAIChatComponent::HandleStreamTerminal(const FUnrealAIChatStreamResul
 void UUnrealAIChatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bEndingPlay = true;
+	CancelActiveCompletions();
+	ActiveCompletionHandles.Reset();
 	if (Client && ActiveStreamHandle.IsValid())
 	{
 		Client->CancelRequest(ActiveStreamHandle);

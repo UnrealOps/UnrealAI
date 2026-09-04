@@ -9,8 +9,10 @@
 #include "UnrealAIChatComponent.h"
 #include "UnrealAIChatStreamAsyncAction.h"
 #include "UnrealAIClient.h"
+#include "Tests/UnrealAIClientTestSupport.h"
 #include "UnrealAIProviderAdapter.h"
 #include "UnrealAIProviders.h"
+#include "UnrealAIRetryPolicy.h"
 #include "UnrealAISettings.h"
 #include "UnrealAISseParser.h"
 #include "UnrealAIStreamChunkQueue.h"
@@ -542,6 +544,135 @@ bool FUnrealAIStreamChunkQueueTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAIRetryPolicyTest,
+	"UnrealAI.Retry.Policy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAIRetryPolicyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FUnrealAIRetryPolicy ProviderPolicy;
+	FUnrealAIRequestRetryOptions RequestOptions;
+	FUnrealAIRetryPolicy Policy = UnrealAIRetryPolicy::Resolve(ProviderPolicy, RequestOptions);
+	TestEqual(TEXT("The default policy retries twice"), Policy.MaxRetries, 2);
+	TestTrue(TEXT("The default initial delay is one second"), FMath::IsNearlyEqual(Policy.InitialDelaySeconds, 1.0f));
+	TestTrue(TEXT("The default maximum delay is sixty seconds"), FMath::IsNearlyEqual(Policy.MaxDelaySeconds, 60.0f));
+
+	RequestOptions.Mode = EUnrealAIRetryMode::Disabled;
+	TestEqual(
+		TEXT("A request can disable configured retries"),
+		UnrealAIRetryPolicy::Resolve(ProviderPolicy, RequestOptions).MaxRetries,
+		0);
+	RequestOptions.Mode = EUnrealAIRetryMode::OverrideMaxRetries;
+	RequestOptions.MaxRetries = 100;
+	TestEqual(
+		TEXT("A request retry override is bounded"),
+		UnrealAIRetryPolicy::Resolve(ProviderPolicy, RequestOptions).MaxRetries,
+		UnrealAIRetryPolicy::MaxSupportedRetries);
+	ProviderPolicy.InitialDelaySeconds = 10.0f;
+	ProviderPolicy.MaxDelaySeconds = 2.0f;
+	Policy = UnrealAIRetryPolicy::Resolve(ProviderPolicy, FUnrealAIRequestRetryOptions());
+	TestTrue(
+		TEXT("The maximum delay remains a ceiling below the initial delay"),
+		FMath::IsNearlyEqual(Policy.MaxDelaySeconds, 2.0f));
+	ProviderPolicy = FUnrealAIRetryPolicy();
+	Policy = UnrealAIRetryPolicy::Resolve(ProviderPolicy, FUnrealAIRequestRetryOptions());
+
+	FUnrealAIRetryFailure Failure;
+	Failure.Reason = EUnrealAIRetryReason::ConnectionError;
+	TestTrue(TEXT("Connection failures are retryable"), UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	Failure.Reason = EUnrealAIRetryReason::Timeout;
+	TestTrue(TEXT("Timeouts are retryable"), UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	Failure.Reason = EUnrealAIRetryReason::EmptyStream;
+	TestTrue(TEXT("Empty streams are retryable before data events"), UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+
+	Failure.Reason = EUnrealAIRetryReason::HttpError;
+	for (const int32 RetryableStatus : {408, 409, 429, 500, 502, 503, 504, 529})
+	{
+		Failure.HttpStatus = RetryableStatus;
+		TestTrue(
+			*FString::Printf(TEXT("HTTP %d is retryable"), RetryableStatus),
+			UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	}
+	for (const int32 PermanentStatus : {400, 401, 403, 404, 501})
+	{
+		Failure.HttpStatus = PermanentStatus;
+		TestFalse(
+			*FString::Printf(TEXT("HTTP %d is not retryable"), PermanentStatus),
+			UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	}
+
+	Failure.HttpStatus = 429;
+	Failure.Error.Code = TEXT("insufficient_quota");
+	TestFalse(
+		TEXT("Permanent OpenAI quota failures are not retried"),
+		UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	Failure.Error = FUnrealAIError();
+	Failure.Error.RawJson = TEXT("{\"details\":{\"error_code\":\"enforced_spend_limit_reached\"}}");
+	TestFalse(
+		TEXT("Permanent Anthropic spend limits are not retried"),
+		UnrealAIRetryPolicy::IsRetryable(Policy, 0, Failure));
+	Failure.Error = FUnrealAIError();
+	TestFalse(
+		TEXT("The retry budget is enforced"),
+		UnrealAIRetryPolicy::IsRetryable(Policy, Policy.MaxRetries, Failure));
+	TestTrue(
+		TEXT("A stream can retry before a complete data event"),
+		UnrealAIRetryPolicy::CanRetryStream(false));
+	TestFalse(
+		TEXT("A stream cannot retry after a complete data event"),
+		UnrealAIRetryPolicy::CanRetryStream(true));
+
+	float DelaySeconds = 0.0f;
+	const FDateTime ReferenceTime(2015, 10, 21, 7, 27, 50);
+	TestTrue(
+		TEXT("The first retry delay can be calculated"),
+		UnrealAIRetryPolicy::TryComputeDelay(
+			Policy, 1, FString(), ReferenceTime, 0.0f, DelaySeconds));
+	TestTrue(TEXT("The first retry starts at one second"), FMath::IsNearlyEqual(DelaySeconds, 1.0f));
+	TestTrue(
+		TEXT("Additive jitter can be calculated"),
+		UnrealAIRetryPolicy::TryComputeDelay(
+			Policy, 2, FString(), ReferenceTime, 1.0f, DelaySeconds));
+	TestTrue(TEXT("The second retry doubles and adds at most 25 percent jitter"), FMath::IsNearlyEqual(DelaySeconds, 2.5f));
+	TestTrue(
+		TEXT("A numeric Retry-After value is honored as a minimum"),
+		UnrealAIRetryPolicy::TryComputeDelay(
+			Policy, 1, TEXT("5"), ReferenceTime, 0.0f, DelaySeconds));
+	TestTrue(TEXT("Retry-After raises the delay"), FMath::IsNearlyEqual(DelaySeconds, 5.0f));
+	TestTrue(
+		TEXT("An HTTP-date Retry-After value is supported"),
+		UnrealAIRetryPolicy::TryComputeDelay(
+			Policy,
+			1,
+			TEXT("Wed, 21 Oct 2015 07:28:00 GMT"),
+			ReferenceTime,
+			0.0f,
+			DelaySeconds));
+	TestTrue(TEXT("The HTTP date becomes a ten-second delay"), FMath::IsNearlyEqual(DelaySeconds, 10.0f));
+	TestFalse(
+		TEXT("A server delay above the configured ceiling is not retried"),
+		UnrealAIRetryPolicy::TryComputeDelay(
+			Policy, 1, TEXT("61"), ReferenceTime, 0.0f, DelaySeconds));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAIRetryCoordinatorTest,
+	"UnrealAI.Retry.Coordinator",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAIRetryCoordinatorTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FUnrealAIClientTestAccess::RunRetryCoordinatorTests(*this);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FUnrealAIStreamingAdaptersTest,
 	"UnrealAI.Streaming.ProviderAdapters",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -842,11 +973,37 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Async stream cancellation is Blueprint callable"), CancelStreamRequest->HasAnyFunctionFlags(FUNC_BlueprintCallable));
 	}
 
+	const UFunction* CancelCompletionRequest = UUnrealAIChatCompletionAsyncAction::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatCompletionAsyncAction, Cancel));
+	TestNotNull(TEXT("The completion async action exposes cancellation"), CancelCompletionRequest);
+	if (CancelCompletionRequest)
+	{
+		TestTrue(TEXT("Async completion cancellation is Blueprint callable"), CancelCompletionRequest->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+	}
+
+	for (const FName DelegateName : {
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatCompletionAsyncAction, Completed),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatCompletionAsyncAction, Failed),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatCompletionAsyncAction, Cancelled),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatCompletionAsyncAction, Retrying)})
+	{
+		const FMulticastDelegateProperty* Delegate = FindFProperty<FMulticastDelegateProperty>(
+			UUnrealAIChatCompletionAsyncAction::StaticClass(), DelegateName);
+		TestNotNull(*FString::Printf(TEXT("Completion async delegate %s is reflected"), *DelegateName.ToString()), Delegate);
+		if (Delegate)
+		{
+			TestTrue(
+				*FString::Printf(TEXT("Completion async delegate %s is Blueprint assignable"), *DelegateName.ToString()),
+				Delegate->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+		}
+	}
+
 	for (const FName DelegateName : {
 		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Event),
 		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Completed),
 		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Failed),
-		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Cancelled)})
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Cancelled),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatStreamAsyncAction, Retrying)})
 	{
 		const FMulticastDelegateProperty* Delegate = FindFProperty<FMulticastDelegateProperty>(
 			UUnrealAIChatStreamAsyncAction::StaticClass(), DelegateName);
@@ -883,6 +1040,14 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Cancel Active Stream is Blueprint callable"), CancelActiveStream->HasAnyFunctionFlags(FUNC_BlueprintCallable));
 	}
 
+	const UFunction* CancelActiveCompletions = UUnrealAIChatComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UUnrealAIChatComponent, CancelActiveCompletions));
+	TestNotNull(TEXT("Cancel Active Completions is reflected"), CancelActiveCompletions);
+	if (CancelActiveCompletions)
+	{
+		TestTrue(TEXT("Cancel Active Completions is Blueprint callable"), CancelActiveCompletions->HasAnyFunctionFlags(FUNC_BlueprintCallable));
+	}
+
 	const FMulticastDelegateProperty* Completed = FindFProperty<FMulticastDelegateProperty>(
 		UUnrealAIChatComponent::StaticClass(),
 		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatCompleted));
@@ -899,6 +1064,22 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 	if (Failed)
 	{
 		TestTrue(TEXT("On Chat Failed is Blueprint assignable"), Failed->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+	}
+
+	for (const FName DelegateName : {
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatCancelled),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatRetrying),
+		GET_MEMBER_NAME_CHECKED(UUnrealAIChatComponent, OnChatStreamRetrying)})
+	{
+		const FMulticastDelegateProperty* Delegate = FindFProperty<FMulticastDelegateProperty>(
+			UUnrealAIChatComponent::StaticClass(), DelegateName);
+		TestNotNull(*FString::Printf(TEXT("Component delegate %s is reflected"), *DelegateName.ToString()), Delegate);
+		if (Delegate)
+		{
+			TestTrue(
+				*FString::Printf(TEXT("Component delegate %s is Blueprint assignable"), *DelegateName.ToString()),
+				Delegate->HasAnyPropertyFlags(CPF_BlueprintAssignable));
+		}
 	}
 
 	const FMulticastDelegateProperty* StreamEvent = FindFProperty<FMulticastDelegateProperty>(
@@ -933,6 +1114,12 @@ bool FUnrealAIBlueprintSurfaceTest::RunTest(const FString& Parameters)
 				Delegate->HasAnyPropertyFlags(CPF_BlueprintAssignable));
 		}
 	}
+
+	TestNotNull(
+		TEXT("Retry events expose their logical request handle to Blueprints"),
+		FindFProperty<FStructProperty>(
+			FUnrealAIRetryEvent::StaticStruct(),
+			GET_MEMBER_NAME_CHECKED(FUnrealAIRetryEvent, RequestHandle)));
 
 	return true;
 }

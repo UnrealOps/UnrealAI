@@ -8,7 +8,7 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 - The initial release is `0.1.0`; release tags use the `v0.1.0` form.
 - Unreal Engine 5.7 is the currently validated engine release.
 - `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
-- Chat generation supports one-shot responses and provider-neutral, text-first SSE streaming. Do not describe normalized tool calls, reasoning events, multimodal helpers, automatic retries, or other roadmap features as implemented.
+- Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff for transient failures. Do not describe normalized tool calls, reasoning events, multimodal helpers, or other roadmap features as implemented.
 - The built-in provider defaults are defined in `Source/UnrealAI/Private/UnrealAISettings.cpp`. Avoid duplicating those values unless a user-facing example requires them, and update every documented and validated copy when they change.
 
 ## Repository Map
@@ -52,10 +52,13 @@ When working in a consuming Unreal project, use `.agents/skills/unrealai-cpp` fo
 - A `UUnrealAIClient` must have a suitable `UObject` outer and be retained by a `UPROPERTY` while an HTTP request is active.
 - Configure a client before starting a request. Handle `FUnrealAIError` before reading response content and tolerate successful responses with no choices.
 - Use `CreateChatCompletion` for one-shot work and `StreamChatCompletion` for SSE. `FUnrealAIChatRequest::bStream` is deprecated and must not be used to select the transport.
+- Treat a request handle as the identity of the full logical operation across HTTP attempts. Cancellation, exactly-once completion, and delegate cleanup must also work while a request is waiting in backoff.
+- Keep retry decisions provider-neutral and bounded. Retry only classified transient failures, honor `Retry-After` within the configured ceiling, exclude known permanent quota/billing errors, and preserve the provider policy plus per-request override contract.
+- Retry an SSE request only before the first complete SSE data event. Never replay a partially delivered stream because doing so can duplicate text or provider events.
 - Preserve stream event order and exactly one terminal result on the game thread. A failed or cancelled stream must retain its accumulated partial response, and cancellable callers should retain the returned `FUnrealAIRequestHandle`.
 - Keep provider-specific SSE parsing inside provider adapters. Normalize text, finish reasons, and usage; preserve unsupported provider events as raw JSON without logging them.
 - Leave the request model empty when the configured provider default is intended.
-- Keep Blueprint async actions and actor components non-blocking. Marshal state and delegate behavior through Unreal-supported runtime primitives. Streaming async nodes must expose completion, failure, cancellation, and incremental event paths; actor components accept only one active stream unless their contract is deliberately expanded.
+- Keep Blueprint async actions and actor components non-blocking. Marshal state and delegate behavior through Unreal-supported runtime primitives. Async nodes must expose completion, failure, cancellation, and retry notifications; streaming nodes also expose incremental events. Actor components accept only one active stream unless their contract is deliberately expanded.
 - Keep module dependencies explicit in `Source/UnrealAI/UnrealAI.Build.cs`. Use public dependencies only when exported headers require them.
 
 ## C++ and Blueprint Style

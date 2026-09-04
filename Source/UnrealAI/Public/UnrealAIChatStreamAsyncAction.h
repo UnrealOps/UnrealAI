@@ -23,6 +23,9 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "UnrealAI")
 	FUnrealAIChatStreamCancelledPin Cancelled;
 
+	UPROPERTY(BlueprintAssignable, Category = "UnrealAI|Retry")
+	FUnrealAIRetryPin Retrying;
+
 	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Chat", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Stream Chat Completion (UnrealAI)"))
 	static UUnrealAIChatStreamAsyncAction* StreamChatCompletion(
 		UObject* WorldContextObject,
@@ -45,6 +48,7 @@ private:
 	bool bTerminal = false;
 
 	void HandleEvent(const FUnrealAIChatStreamEvent& StreamEvent);
+	void HandleRetry(const FUnrealAIRetryEvent& RetryEvent);
 	void HandleTerminal(const FUnrealAIChatStreamResult& Result);
 	void BroadcastFailure(const FUnrealAIError& Error);
 };

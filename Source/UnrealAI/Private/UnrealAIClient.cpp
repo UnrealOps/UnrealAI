@@ -2,17 +2,29 @@
 
 #include "Async/Async.h"
 #include "Containers/StringConv.h"
+#include "Containers/Ticker.h"
 #include "HAL/PlatformMisc.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/ScopeLock.h"
 #include "UnrealAIProviderAdapter.h"
+#include "UnrealAIRetryPolicy.h"
 #include "UnrealAISettings.h"
 #include "UnrealAIStreamChunkQueue.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Tests/UnrealAIClientTestSupport.h"
+#endif
 
 namespace UnrealAIClientPrivate
 {
 	constexpr int32 MaxErrorBodyBytes = 1024 * 1024;
+
+	enum class ERequestMode : uint8
+	{
+		OneShot,
+		Stream
+	};
 
 	FString Utf8BytesToString(const TArray<uint8>& Bytes)
 	{
@@ -25,35 +37,150 @@ namespace UnrealAIClientPrivate
 		return FString(Converted.Length(), Converted.Get());
 	}
 
-	FUnrealAIError MakeStreamError(const FString& Message, const FString& Code, int32 HttpStatus = 0)
+	FUnrealAIError MakeRequestError(
+		const FString& Message,
+		const FString& Type,
+		const FString& Code,
+		int32 HttpStatus = 0)
 	{
 		FUnrealAIError Error = UnrealAIProviderAdapters::MakeError(Message, HttpStatus);
-		Error.Type = TEXT("stream_error");
+		Error.Type = Type;
 		Error.Code = Code;
 		return Error;
 	}
+
+	FUnrealAIError MakeStreamError(const FString& Message, const FString& Code, int32 HttpStatus = 0)
+	{
+		return MakeRequestError(Message, TEXT("stream_error"), Code, HttpStatus);
+	}
+
+	FUnrealAIError MakeCancellationError()
+	{
+		return MakeRequestError(
+			TEXT("The UnrealAI request was cancelled."),
+			TEXT("request_cancelled"),
+			TEXT("request_cancelled"));
+	}
+
+	EUnrealAIRetryReason GetTransportRetryReason(const FHttpRequestPtr& HttpRequest)
+	{
+		if (HttpRequest.IsValid())
+		{
+			switch (HttpRequest->GetFailureReason())
+			{
+			case EHttpFailureReason::ConnectionError:
+				return EUnrealAIRetryReason::ConnectionError;
+			case EHttpFailureReason::TimedOut:
+				return EUnrealAIRetryReason::Timeout;
+			default:
+				break;
+			}
+		}
+		return EUnrealAIRetryReason::HttpError;
+	}
 }
 
-struct FUnrealAIStreamRequestState
+struct FUnrealAIRequestState
 {
 	FCriticalSection QueueMutex;
 	FUnrealAIStreamChunkQueue PendingChunks;
 	TArray<uint8> ErrorBodyBytes;
 	bool bDrainScheduled = false;
-	bool bAcceptData = true;
+	bool bAcceptData = false;
 	bool bQueueOverflowed = false;
 	int32 HttpStatus = 0;
+	int32 AttemptNumber = 0;
 
 	FGuid RequestId;
 	FHttpRequestPtr HttpRequest;
+	FTSTicker::FDelegateHandle RetryTickerHandle;
+	UnrealAIClientPrivate::ERequestMode Mode = UnrealAIClientPrivate::ERequestMode::OneShot;
+	FUnrealAIHttpRequestData RequestData;
 	EUnrealAIProviderApi ProviderApi = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
-	FString ResolvedModel;
+	float TimeoutSeconds = 120.0f;
+	FUnrealAIRetryPolicy RetryPolicy;
+	int32 RetriesAttempted = 0;
+	bool bWaitingForRetry = false;
+	bool bSawStreamEvent = false;
+	bool bTerminal = false;
+	int32 ExpectedChoiceCount = 1;
+
 	FUnrealAISseParser SseParser;
 	FUnrealAIProviderStreamState ProviderState;
+	FUnrealAIChatCompletionNativeDelegate CompletionDelegate;
 	FUnrealAIChatStreamEventNativeDelegate EventDelegate;
 	FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate;
-	bool bTerminal = false;
+	FUnrealAIRetryNativeDelegate RetryDelegate;
+#if WITH_DEV_AUTOMATION_TESTS
+	TFunction<void()> StartAttemptForTesting;
+#endif
 };
+
+namespace UnrealAIClientPrivate
+{
+	void DetachHttpRequest(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State)
+	{
+		if (!State.IsValid() || !State->HttpRequest.IsValid())
+		{
+			return;
+		}
+
+		State->HttpRequest->OnStatusCodeReceived().Unbind();
+		State->HttpRequest->OnProcessRequestComplete().Unbind();
+		State->HttpRequest.Reset();
+	}
+
+	void RemoveRetryTicker(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State)
+	{
+		if (State.IsValid() && State->RetryTickerHandle.IsValid())
+		{
+			FTSTicker::RemoveTicker(State->RetryTickerHandle);
+			State->RetryTickerHandle.Reset();
+		}
+	}
+
+	void ResetStreamAttempt(
+		const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+		bool bAcceptData)
+	{
+		{
+			const FScopeLock Lock(&State->QueueMutex);
+			State->PendingChunks.Reset();
+			State->bDrainScheduled = false;
+			State->bAcceptData = bAcceptData;
+			State->bQueueOverflowed = false;
+			State->HttpStatus = 0;
+		}
+		State->ErrorBodyBytes.Reset();
+		State->SseParser = FUnrealAISseParser();
+		State->ProviderState = FUnrealAIProviderStreamState();
+		State->ProviderState.Response.Model = State->RequestData.ResolvedModel;
+		State->ProviderState.ExpectedChoiceCount = State->ExpectedChoiceCount;
+	}
+
+	void ConfigureHttpRequest(
+		const FHttpRequestRef& HttpRequest,
+		const FUnrealAIRequestState& State)
+	{
+		HttpRequest->SetURL(State.RequestData.Url);
+		HttpRequest->SetVerb(State.RequestData.Verb);
+		if (State.Mode == ERequestMode::Stream)
+		{
+			HttpRequest->SetTimeout(0.0f);
+			HttpRequest->SetActivityTimeout(FMath::Max(1.0f, State.TimeoutSeconds));
+		}
+		else
+		{
+			HttpRequest->SetTimeout(FMath::Max(1.0f, State.TimeoutSeconds));
+		}
+
+		for (const TPair<FString, FString>& Header : State.RequestData.Headers)
+		{
+			HttpRequest->SetHeader(Header.Key, Header.Value);
+		}
+		HttpRequest->SetContentAsString(State.RequestData.Body);
+	}
+}
 
 void UUnrealAIClient::Configure(const FUnrealAIProviderConfig& InProviderConfig)
 {
@@ -94,41 +221,41 @@ const FUnrealAIProviderConfig& UUnrealAIClient::GetProviderConfig() const
 	return ProviderConfig;
 }
 
-void UUnrealAIClient::CreateChatCompletion(
+FUnrealAIRequestHandle UUnrealAIClient::CreateChatCompletion(
 	const FUnrealAIChatRequest& Request,
-	FUnrealAIChatCompletionNativeDelegate CompletionDelegate)
+	FUnrealAIChatCompletionNativeDelegate CompletionDelegate,
+	FUnrealAIRetryNativeDelegate RetryDelegate)
 {
-	if (!bConfigured)
+	auto FailBeforeStart = [&CompletionDelegate](const FUnrealAIError& Error)
 	{
 		FUnrealAIChatResponse EmptyResponse;
-		CompletionDelegate.ExecuteIfBound(
-			EmptyResponse,
-			UnrealAIProviderAdapters::MakeError(TEXT("Client is not configured.")));
-		return;
+		CompletionDelegate.ExecuteIfBound(EmptyResponse, Error);
+	};
+
+	if (!bConfigured)
+	{
+		FailBeforeStart(UnrealAIProviderAdapters::MakeError(TEXT("Client is not configured.")));
+		return FUnrealAIRequestHandle();
 	}
 
 	if (Request.bStream)
 	{
-		FUnrealAIChatResponse EmptyResponse;
 		FUnrealAIError Error = UnrealAIProviderAdapters::MakeError(
 			TEXT("The bStream request field is deprecated. Use StreamChatCompletion or the Stream Chat Completion Blueprint node."));
 		Error.Type = TEXT("invalid_request_error");
 		Error.Code = TEXT("deprecated_stream_flag");
-		CompletionDelegate.ExecuteIfBound(EmptyResponse, Error);
-		return;
+		FailBeforeStart(Error);
+		return FUnrealAIRequestHandle();
 	}
 
 	const FString ApiKey = ResolveApiKey();
 	if (ProviderConfig.bRequiresApiKey && ApiKey.IsEmpty())
 	{
-		FUnrealAIChatResponse EmptyResponse;
-		CompletionDelegate.ExecuteIfBound(
-			EmptyResponse,
-			UnrealAIProviderAdapters::MakeError(
-				FString::Printf(
-					TEXT("API key is not configured. Set %s or provide an API key override."),
-					*ProviderConfig.ApiKeyEnvironmentVariable)));
-		return;
+		FailBeforeStart(UnrealAIProviderAdapters::MakeError(
+			FString::Printf(
+				TEXT("API key is not configured. Set %s or provide an API key override."),
+				*ProviderConfig.ApiKeyEnvironmentVariable)));
+		return FUnrealAIRequestHandle();
 	}
 
 	const IUnrealAIProviderAdapter& Adapter = UnrealAIProviderAdapters::Get(ProviderConfig.Api);
@@ -142,43 +269,37 @@ void UUnrealAIClient::CreateChatCompletion(
 		RequestData,
 		BuildError))
 	{
-		FUnrealAIChatResponse EmptyResponse;
-		CompletionDelegate.ExecuteIfBound(EmptyResponse, BuildError);
-		return;
+		FailBeforeStart(BuildError);
+		return FUnrealAIRequestHandle();
 	}
 
-	FHttpRequestRef HttpRequest = FHttpModule::Get().CreateRequest();
-	HttpRequest->SetURL(RequestData.Url);
-	HttpRequest->SetVerb(RequestData.Verb);
-	HttpRequest->SetTimeout(FMath::Max(1.0f, ProviderConfig.TimeoutSeconds));
-	for (const TPair<FString, FString>& Header : RequestData.Headers)
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> State =
+		MakeShared<FUnrealAIRequestState, ESPMode::ThreadSafe>();
+	State->RequestId = FGuid::NewGuid();
+	State->Mode = UnrealAIClientPrivate::ERequestMode::OneShot;
+	State->RequestData = MoveTemp(RequestData);
+	State->ProviderApi = ProviderConfig.Api;
+	State->TimeoutSeconds = ProviderConfig.TimeoutSeconds;
+	State->RetryPolicy = UnrealAIRetryPolicy::Resolve(ProviderConfig.RetryPolicy, Request.RetryOptions);
+	State->CompletionDelegate = MoveTemp(CompletionDelegate);
+	State->RetryDelegate = MoveTemp(RetryDelegate);
+
+	ActiveRequests.Add(State->RequestId, State);
+	StartRequestAttempt(State);
+
+	FUnrealAIRequestHandle Handle;
+	if (ActiveRequests.Contains(State->RequestId))
 	{
-		HttpRequest->SetHeader(Header.Key, Header.Value);
+		Handle.Id = State->RequestId;
 	}
-	HttpRequest->SetContentAsString(RequestData.Body);
-	HttpRequest->OnProcessRequestComplete().BindUObject(
-		this,
-		&UUnrealAIClient::HandleChatCompletionResponse,
-		ProviderConfig.Api,
-		RequestData.ResolvedModel,
-		CompletionDelegate);
-
-	InFlightRequests.Add(HttpRequest);
-	if (!HttpRequest->ProcessRequest())
-	{
-		InFlightRequests.Remove(HttpRequest);
-
-		FUnrealAIChatResponse EmptyResponse;
-		CompletionDelegate.ExecuteIfBound(
-			EmptyResponse,
-			UnrealAIProviderAdapters::MakeError(TEXT("Failed to start HTTP request.")));
-	}
+	return Handle;
 }
 
 FUnrealAIRequestHandle UUnrealAIClient::StreamChatCompletion(
 	const FUnrealAIChatRequest& Request,
 	FUnrealAIChatStreamEventNativeDelegate EventDelegate,
-	FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate)
+	FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate,
+	FUnrealAIRetryNativeDelegate RetryDelegate)
 {
 	auto FailBeforeStart = [&TerminalDelegate](const FUnrealAIError& Error)
 	{
@@ -219,144 +340,210 @@ FUnrealAIRequestHandle UUnrealAIClient::StreamChatCompletion(
 		return FUnrealAIRequestHandle();
 	}
 
-	FHttpRequestRef HttpRequest = FHttpModule::Get().CreateRequest();
-	HttpRequest->SetURL(RequestData.Url);
-	HttpRequest->SetVerb(RequestData.Verb);
-	HttpRequest->SetTimeout(0.0f);
-	HttpRequest->SetActivityTimeout(FMath::Max(1.0f, ProviderConfig.TimeoutSeconds));
-	for (const TPair<FString, FString>& Header : RequestData.Headers)
-	{
-		HttpRequest->SetHeader(Header.Key, Header.Value);
-	}
-	HttpRequest->SetContentAsString(RequestData.Body);
-
-	const TSharedRef<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State =
-		MakeShared<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>();
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> State =
+		MakeShared<FUnrealAIRequestState, ESPMode::ThreadSafe>();
 	State->RequestId = FGuid::NewGuid();
-	State->HttpRequest = HttpRequest;
+	State->Mode = UnrealAIClientPrivate::ERequestMode::Stream;
+	State->RequestData = MoveTemp(RequestData);
 	State->ProviderApi = ProviderConfig.Api;
-	State->ResolvedModel = RequestData.ResolvedModel;
-	State->ProviderState.Response.Model = RequestData.ResolvedModel;
-	State->ProviderState.ExpectedChoiceCount = FMath::Max(1, Request.NumChoices);
+	State->TimeoutSeconds = ProviderConfig.TimeoutSeconds;
+	State->RetryPolicy = UnrealAIRetryPolicy::Resolve(ProviderConfig.RetryPolicy, Request.RetryOptions);
+	State->ExpectedChoiceCount = FMath::Max(1, Request.NumChoices);
 	State->EventDelegate = MoveTemp(EventDelegate);
 	State->TerminalDelegate = MoveTemp(TerminalDelegate);
-	auto FailStateBeforeStart = [&State](const FUnrealAIError& Error)
-	{
-		FUnrealAIChatStreamResult Result;
-		Result.Status = EUnrealAIChatStreamStatus::Failed;
-		Result.Error = Error;
-		State->TerminalDelegate.ExecuteIfBound(Result);
-		State->EventDelegate.Unbind();
-		State->TerminalDelegate.Unbind();
-	};
+	State->RetryDelegate = MoveTemp(RetryDelegate);
 
-	TWeakObjectPtr<UUnrealAIClient> WeakThis(this);
-	TWeakPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> WeakState = State;
-	FHttpRequestStreamDelegateV2 StreamDelegate;
-	StreamDelegate.BindLambda([WeakState, WeakThis](void* Data, int64& Length)
+	ActiveRequests.Add(State->RequestId, State);
+	StartRequestAttempt(State);
+
+	FUnrealAIRequestHandle Handle;
+	if (ActiveRequests.Contains(State->RequestId))
 	{
-		if (!Data || Length <= 0 || Length > MAX_int32)
+		Handle.Id = State->RequestId;
+	}
+	return Handle;
+}
+
+void UUnrealAIClient::StartRequestAttempt(
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State)
+{
+	if (!State.IsValid() || State->bTerminal || !ActiveRequests.Contains(State->RequestId))
+	{
+		return;
+	}
+
+	State->RetryTickerHandle.Reset();
+	State->bWaitingForRetry = false;
+	++State->AttemptNumber;
+	const int32 AttemptNumber = State->AttemptNumber;
+
+	if (State->Mode == UnrealAIClientPrivate::ERequestMode::Stream)
+	{
+		UnrealAIClientPrivate::ResetStreamAttempt(State, true);
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (State->StartAttemptForTesting)
+	{
+		State->StartAttemptForTesting();
+		return;
+	}
+#endif
+
+	FHttpRequestRef HttpRequest = FHttpModule::Get().CreateRequest();
+	State->HttpRequest = HttpRequest;
+	UnrealAIClientPrivate::ConfigureHttpRequest(HttpRequest, *State);
+
+	if (State->Mode == UnrealAIClientPrivate::ERequestMode::OneShot)
+	{
+		HttpRequest->OnProcessRequestComplete().BindUObject(
+			this,
+			&UUnrealAIClient::HandleChatCompletionResponse,
+			State->RequestId,
+			AttemptNumber);
+	}
+	else
+	{
+		TWeakObjectPtr<UUnrealAIClient> WeakThis(this);
+		TWeakPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> WeakState = State;
+		FHttpRequestStreamDelegateV2 StreamDelegate;
+		StreamDelegate.BindLambda([WeakState, WeakThis, AttemptNumber](void* Data, int64& Length)
 		{
+			if (!Data || Length <= 0 || Length > MAX_int32)
+			{
+				Length = 0;
+				return;
+			}
+
+			const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> PinnedState = WeakState.Pin();
+			if (!PinnedState.IsValid())
+			{
+				Length = 0;
+				return;
+			}
+
+			bool bScheduleDrain = false;
+			{
+				const FScopeLock Lock(&PinnedState->QueueMutex);
+				if (!PinnedState->bAcceptData || PinnedState->AttemptNumber != AttemptNumber)
+				{
+					Length = 0;
+					return;
+				}
+
+				if (!PinnedState->PendingChunks.Enqueue(static_cast<const uint8*>(Data), Length))
+				{
+					PinnedState->bAcceptData = false;
+					PinnedState->bQueueOverflowed = true;
+					Length = 0;
+				}
+				if (!PinnedState->bDrainScheduled)
+				{
+					PinnedState->bDrainScheduled = true;
+					bScheduleDrain = true;
+				}
+			}
+
+			if (bScheduleDrain)
+			{
+				AsyncTask(ENamedThreads::GameThread, [WeakThis, RequestId = PinnedState->RequestId]()
+				{
+					if (UUnrealAIClient* Client = WeakThis.Get())
+					{
+						Client->DrainStreamRequest(RequestId);
+					}
+				});
+			}
+		});
+		if (!HttpRequest->SetResponseBodyReceiveStreamDelegateV2(StreamDelegate))
+		{
+			UnrealAIClientPrivate::DetachHttpRequest(State);
+			CompleteStreamRequest(
+				State,
+				EUnrealAIChatStreamStatus::Failed,
+				UnrealAIClientPrivate::MakeStreamError(
+					TEXT("The active Unreal HTTP backend does not support response streaming."),
+					TEXT("stream_transport_unavailable")));
 			return;
 		}
-		const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State = WeakState.Pin();
-		if (!State.IsValid())
-		{
-			Length = 0;
-			return;
-		}
 
-		bool bScheduleDrain = false;
+		HttpRequest->OnStatusCodeReceived().BindLambda([WeakState, WeakThis, AttemptNumber](FHttpRequestPtr RequestPtr, int32 StatusCode)
 		{
-			const FScopeLock Lock(&State->QueueMutex);
-			if (!State->bAcceptData)
+			(void)RequestPtr;
+			const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> PinnedState = WeakState.Pin();
+			if (!PinnedState.IsValid())
 			{
 				return;
 			}
 
-			if (!State->PendingChunks.Enqueue(static_cast<const uint8*>(Data), Length))
+			bool bScheduleDrain = false;
 			{
-				State->bAcceptData = false;
-				State->bQueueOverflowed = true;
-				Length = 0;
-			}
-			if (!State->bDrainScheduled)
-			{
-				State->bDrainScheduled = true;
-				bScheduleDrain = true;
-			}
-		}
-
-		if (bScheduleDrain)
-		{
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, RequestId = State->RequestId]()
-			{
-				if (UUnrealAIClient* Client = WeakThis.Get())
+				const FScopeLock Lock(&PinnedState->QueueMutex);
+				if (PinnedState->AttemptNumber != AttemptNumber)
 				{
-					Client->DrainStreamRequest(RequestId);
+					return;
 				}
-			});
-		}
-	});
-	if (!HttpRequest->SetResponseBodyReceiveStreamDelegateV2(StreamDelegate))
-	{
-		FailStateBeforeStart(UnrealAIClientPrivate::MakeStreamError(
-			TEXT("The active Unreal HTTP backend does not support response streaming."),
-			TEXT("stream_transport_unavailable")));
-		return FUnrealAIRequestHandle();
+				if (StatusCode > 0)
+				{
+					PinnedState->HttpStatus = StatusCode;
+				}
+				if (PinnedState->HttpStatus != 0 && !PinnedState->PendingChunks.IsEmpty() && !PinnedState->bDrainScheduled)
+				{
+					PinnedState->bDrainScheduled = true;
+					bScheduleDrain = true;
+				}
+			}
+
+			if (bScheduleDrain)
+			{
+				AsyncTask(ENamedThreads::GameThread, [WeakThis, RequestId = PinnedState->RequestId]()
+				{
+					if (UUnrealAIClient* Client = WeakThis.Get())
+					{
+						Client->DrainStreamRequest(RequestId);
+					}
+				});
+			}
+		});
+		HttpRequest->OnProcessRequestComplete().BindUObject(
+			this,
+			&UUnrealAIClient::HandleStreamResponse,
+			State->RequestId,
+			AttemptNumber);
 	}
 
-	HttpRequest->OnStatusCodeReceived().BindLambda([WeakState, WeakThis](FHttpRequestPtr RequestPtr, int32 StatusCode)
-	{
-		(void)RequestPtr;
-		const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State = WeakState.Pin();
-		if (!State.IsValid())
-		{
-			return;
-		}
-		bool bScheduleDrain = false;
-		{
-			const FScopeLock Lock(&State->QueueMutex);
-			if (StatusCode >= 200)
-			{
-				State->HttpStatus = StatusCode;
-			}
-			if (State->HttpStatus != 0 && !State->PendingChunks.IsEmpty() && !State->bDrainScheduled)
-			{
-				State->bDrainScheduled = true;
-				bScheduleDrain = true;
-			}
-		}
-
-		if (bScheduleDrain)
-		{
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, RequestId = State->RequestId]()
-			{
-				if (UUnrealAIClient* Client = WeakThis.Get())
-				{
-					Client->DrainStreamRequest(RequestId);
-				}
-			});
-		}
-	});
-	HttpRequest->OnProcessRequestComplete().BindUObject(
-		this,
-		&UUnrealAIClient::HandleStreamResponse,
-		State->RequestId);
-
-	ActiveStreamRequests.Add(State->RequestId, State);
 	if (!HttpRequest->ProcessRequest())
 	{
-		ActiveStreamRequests.Remove(State->RequestId);
-		FailStateBeforeStart(UnrealAIClientPrivate::MakeStreamError(
-			TEXT("Failed to start streaming HTTP request."),
-			TEXT("stream_start_failed")));
-		return FUnrealAIRequestHandle();
+		UnrealAIClientPrivate::DetachHttpRequest(State);
+		if (State->Mode == UnrealAIClientPrivate::ERequestMode::Stream)
+		{
+			CompleteStreamRequest(
+				State,
+				EUnrealAIChatStreamStatus::Failed,
+				UnrealAIClientPrivate::MakeStreamError(
+					TEXT("Failed to start streaming HTTP request."),
+					TEXT("stream_start_failed")));
+		}
+		else
+		{
+			FUnrealAIChatResponse EmptyResponse;
+			CompleteOneShotRequest(
+				State,
+				EmptyResponse,
+				UnrealAIClientPrivate::MakeRequestError(
+					TEXT("Failed to start HTTP request."),
+					TEXT("transport_error"),
+					TEXT("request_start_failed")));
+		}
 	}
+}
 
-	FUnrealAIRequestHandle Handle;
-	Handle.Id = State->RequestId;
-	return Handle;
+void UUnrealAIClient::ResumeRequestAfterBackoff(const FGuid& RequestId)
+{
+	if (TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveRequests.Find(RequestId))
+	{
+		StartRequestAttempt(*StatePtr);
+	}
 }
 
 bool UUnrealAIClient::CancelRequest(const FUnrealAIRequestHandle& RequestHandle)
@@ -366,23 +553,35 @@ bool UUnrealAIClient::CancelRequest(const FUnrealAIRequestHandle& RequestHandle)
 		return false;
 	}
 
-	TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveStreamRequests.Find(RequestHandle.Id);
+	TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveRequests.Find(RequestHandle.Id);
 	if (!StatePtr)
 	{
 		return false;
 	}
 
-	DrainStreamRequest(RequestHandle.Id);
-	StatePtr = ActiveStreamRequests.Find(RequestHandle.Id);
-	if (!StatePtr)
+	if ((*StatePtr)->Mode == UnrealAIClientPrivate::ERequestMode::Stream && !(*StatePtr)->bWaitingForRetry)
 	{
-		return false;
+		DrainStreamRequest(RequestHandle.Id);
+		StatePtr = ActiveRequests.Find(RequestHandle.Id);
+		if (!StatePtr)
+		{
+			return false;
+		}
 	}
 
-	const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State = *StatePtr;
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> State = *StatePtr;
 	const FHttpRequestPtr HttpRequest = State->HttpRequest;
-	FUnrealAIError NoError;
-	CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Cancelled, NoError);
+	if (State->Mode == UnrealAIClientPrivate::ERequestMode::Stream)
+	{
+		FUnrealAIError NoError;
+		CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Cancelled, NoError);
+	}
+	else
+	{
+		FUnrealAIChatResponse EmptyResponse;
+		CompleteOneShotRequest(State, EmptyResponse, UnrealAIClientPrivate::MakeCancellationError());
+	}
+
 	if (HttpRequest.IsValid())
 	{
 		HttpRequest->CancelRequest();
@@ -409,41 +608,66 @@ void UUnrealAIClient::HandleChatCompletionResponse(
 	FHttpRequestPtr HttpRequest,
 	FHttpResponsePtr HttpResponse,
 	bool bWasSuccessful,
-	EUnrealAIProviderApi ProviderApi,
-	FString ResolvedModel,
-	FUnrealAIChatCompletionNativeDelegate CompletionDelegate)
+	FGuid RequestId,
+	int32 AttemptNumber)
 {
-	InFlightRequests.Remove(HttpRequest);
+	TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveRequests.Find(RequestId);
+	if (!StatePtr || (*StatePtr)->bTerminal || (*StatePtr)->AttemptNumber != AttemptNumber)
+	{
+		return;
+	}
+
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> State = *StatePtr;
+	UnrealAIClientPrivate::DetachHttpRequest(State);
 
 	FUnrealAIChatResponse ParsedResponse;
 	FUnrealAIError Error;
 	if (!bWasSuccessful || !HttpResponse.IsValid())
 	{
-		Error = UnrealAIProviderAdapters::MakeError(
-			TEXT("HTTP request failed before a provider response was received."));
-		CompletionDelegate.ExecuteIfBound(ParsedResponse, Error);
+		Error = UnrealAIClientPrivate::MakeRequestError(
+			TEXT("HTTP request failed before a provider response was received."),
+			TEXT("transport_error"),
+			TEXT("request_transport_failed"));
+		const EUnrealAIRetryReason Reason = UnrealAIClientPrivate::GetTransportRetryReason(HttpRequest);
+		if (TryScheduleRetry(State, Reason, 0, Error, HttpResponse))
+		{
+			return;
+		}
+		CompleteOneShotRequest(State, ParsedResponse, Error);
 		return;
 	}
 
-	const IUnrealAIProviderAdapter& Adapter = UnrealAIProviderAdapters::Get(ProviderApi);
+	const IUnrealAIProviderAdapter& Adapter = UnrealAIProviderAdapters::Get(State->ProviderApi);
 	Adapter.ParseResponse(
-		ResolvedModel,
+		State->RequestData.ResolvedModel,
 		HttpResponse->GetResponseCode(),
 		HttpResponse->GetContentAsString(),
 		ParsedResponse,
 		Error);
-	CompletionDelegate.ExecuteIfBound(ParsedResponse, Error);
+	if (Error.bIsError && TryScheduleRetry(
+		State,
+		EUnrealAIRetryReason::HttpError,
+		HttpResponse->GetResponseCode(),
+		Error,
+		HttpResponse))
+	{
+		return;
+	}
+	CompleteOneShotRequest(State, ParsedResponse, Error);
 }
 
 void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
 {
-	TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveStreamRequests.Find(RequestId);
-	if (!StatePtr || (*StatePtr)->bTerminal)
+	TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveRequests.Find(RequestId);
+	if (!StatePtr
+		|| (*StatePtr)->bTerminal
+		|| (*StatePtr)->Mode != UnrealAIClientPrivate::ERequestMode::Stream
+		|| (*StatePtr)->bWaitingForRetry)
 	{
 		return;
 	}
 
-	const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State = *StatePtr;
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> State = *StatePtr;
 	TArray<TArray<uint8>> Chunks;
 	int32 HttpStatus = 0;
 	bool bQueueOverflowed = false;
@@ -503,6 +727,7 @@ void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
 
 		for (const FUnrealAISseEvent& SseEvent : SseEvents)
 		{
+			State->bSawStreamEvent = true;
 			TArray<FUnrealAIChatStreamEvent> Events;
 			if (!UnrealAIProviderAdapters::Get(State->ProviderApi).ParseStreamEvent(
 				SseEvent, State->ProviderState, Events, ParseError))
@@ -519,7 +744,7 @@ void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
 			for (const FUnrealAIChatStreamEvent& Event : Events)
 			{
 				State->EventDelegate.ExecuteIfBound(Event);
-				if (!ActiveStreamRequests.Contains(RequestId))
+				if (!ActiveRequests.Contains(RequestId))
 				{
 					return;
 				}
@@ -532,11 +757,11 @@ void UUnrealAIClient::HandleStreamResponse(
 	FHttpRequestPtr HttpRequest,
 	FHttpResponsePtr HttpResponse,
 	bool bWasSuccessful,
-	FGuid RequestId)
+	FGuid RequestId,
+	int32 AttemptNumber)
 {
-	(void)HttpRequest;
-	TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveStreamRequests.Find(RequestId);
-	if (!StatePtr)
+	TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>* StatePtr = ActiveRequests.Find(RequestId);
+	if (!StatePtr || (*StatePtr)->bTerminal || (*StatePtr)->AttemptNumber != AttemptNumber)
 	{
 		return;
 	}
@@ -548,23 +773,27 @@ void UUnrealAIClient::HandleStreamResponse(
 	}
 
 	DrainStreamRequest(RequestId);
-	StatePtr = ActiveStreamRequests.Find(RequestId);
-	if (!StatePtr)
+	StatePtr = ActiveRequests.Find(RequestId);
+	if (!StatePtr || (*StatePtr)->AttemptNumber != AttemptNumber)
 	{
 		return;
 	}
 
-	const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe> State = *StatePtr;
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe> State = *StatePtr;
+	UnrealAIClientPrivate::DetachHttpRequest(State);
 	const int32 HttpStatus = HttpResponse.IsValid() ? HttpResponse->GetResponseCode() : State->HttpStatus;
 	if (!bWasSuccessful || !HttpResponse.IsValid())
 	{
-		CompleteStreamRequest(
-			State,
-			EUnrealAIChatStreamStatus::Failed,
-			UnrealAIClientPrivate::MakeStreamError(
-				TEXT("Streaming HTTP request ended before a complete provider response was received."),
-				TEXT("stream_transport_failed"),
-				HttpStatus));
+		const FUnrealAIError Error = UnrealAIClientPrivate::MakeStreamError(
+			TEXT("Streaming HTTP request ended before a complete provider response was received."),
+			TEXT("stream_transport_failed"),
+			HttpStatus);
+		const EUnrealAIRetryReason Reason = UnrealAIClientPrivate::GetTransportRetryReason(HttpRequest);
+		if (!State->bSawStreamEvent && TryScheduleRetry(State, Reason, HttpStatus, Error, HttpResponse))
+		{
+			return;
+		}
+		CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Failed, Error);
 		return;
 	}
 
@@ -573,11 +802,20 @@ void UUnrealAIClient::HandleStreamResponse(
 		FUnrealAIChatResponse IgnoredResponse;
 		FUnrealAIError ProviderError;
 		UnrealAIProviderAdapters::Get(State->ProviderApi).ParseResponse(
-			State->ResolvedModel,
+			State->RequestData.ResolvedModel,
 			HttpStatus,
 			UnrealAIClientPrivate::Utf8BytesToString(State->ErrorBodyBytes),
 			IgnoredResponse,
 			ProviderError);
+		if (!State->bSawStreamEvent && TryScheduleRetry(
+			State,
+			EUnrealAIRetryReason::HttpError,
+			HttpStatus,
+			ProviderError,
+			HttpResponse))
+		{
+			return;
+		}
 		CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Failed, ProviderError);
 		return;
 	}
@@ -604,6 +842,7 @@ void UUnrealAIClient::HandleStreamResponse(
 	}
 	for (const FUnrealAISseEvent& SseEvent : FinalSseEvents)
 	{
+		State->bSawStreamEvent = true;
 		TArray<FUnrealAIChatStreamEvent> Events;
 		if (!UnrealAIProviderAdapters::Get(State->ProviderApi).ParseStreamEvent(
 			SseEvent, State->ProviderState, Events, ParseError))
@@ -614,7 +853,7 @@ void UUnrealAIClient::HandleStreamResponse(
 		for (const FUnrealAIChatStreamEvent& Event : Events)
 		{
 			State->EventDelegate.ExecuteIfBound(Event);
-			if (!ActiveStreamRequests.Contains(RequestId))
+			if (!ActiveRequests.Contains(RequestId))
 			{
 				return;
 			}
@@ -623,13 +862,20 @@ void UUnrealAIClient::HandleStreamResponse(
 
 	if (!UnrealAIProviderAdapters::Get(State->ProviderApi).CanCompleteStream(State->ProviderState))
 	{
-		CompleteStreamRequest(
+		const FUnrealAIError Error = UnrealAIClientPrivate::MakeStreamError(
+			TEXT("The provider stream ended without its required terminal event."),
+			TEXT("truncated_stream"),
+			HttpStatus);
+		if (!State->bSawStreamEvent && TryScheduleRetry(
 			State,
-			EUnrealAIChatStreamStatus::Failed,
-			UnrealAIClientPrivate::MakeStreamError(
-				TEXT("The provider stream ended without its required terminal event."),
-				TEXT("truncated_stream"),
-				HttpStatus));
+			EUnrealAIRetryReason::EmptyStream,
+			HttpStatus,
+			Error,
+			HttpResponse))
+		{
+			return;
+		}
+		CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Failed, Error);
 		return;
 	}
 
@@ -637,8 +883,109 @@ void UUnrealAIClient::HandleStreamResponse(
 	CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Completed, NoError);
 }
 
+bool UUnrealAIClient::TryScheduleRetry(
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+	EUnrealAIRetryReason Reason,
+	int32 HttpStatus,
+	const FUnrealAIError& Error,
+	const FHttpResponsePtr& HttpResponse)
+{
+	if (!State.IsValid()
+		|| State->bTerminal
+		|| !ActiveRequests.Contains(State->RequestId)
+		|| (State->Mode == UnrealAIClientPrivate::ERequestMode::Stream
+			&& !UnrealAIRetryPolicy::CanRetryStream(State->bSawStreamEvent)))
+	{
+		return false;
+	}
+
+	FUnrealAIRetryFailure Failure;
+	Failure.Reason = Reason;
+	Failure.HttpStatus = HttpStatus;
+	Failure.Error = Error;
+	if (HttpResponse.IsValid())
+	{
+		Failure.RetryAfter = HttpResponse->GetHeader(TEXT("Retry-After"));
+	}
+
+	if (!UnrealAIRetryPolicy::IsRetryable(State->RetryPolicy, State->RetriesAttempted, Failure))
+	{
+		return false;
+	}
+
+	const int32 RetryNumber = State->RetriesAttempted + 1;
+	float DelaySeconds = 0.0f;
+	if (!UnrealAIRetryPolicy::TryComputeDelay(
+		State->RetryPolicy,
+		RetryNumber,
+		Failure.RetryAfter,
+		FDateTime::UtcNow(),
+		FMath::FRand(),
+		DelaySeconds))
+	{
+		return false;
+	}
+
+	State->RetriesAttempted = RetryNumber;
+	State->bWaitingForRetry = true;
+	if (State->Mode == UnrealAIClientPrivate::ERequestMode::Stream)
+	{
+		UnrealAIClientPrivate::ResetStreamAttempt(State, false);
+	}
+
+	FUnrealAIRetryEvent RetryEvent;
+	RetryEvent.RequestHandle.Id = State->RequestId;
+	RetryEvent.RetryNumber = RetryNumber;
+	RetryEvent.MaxRetries = State->RetryPolicy.MaxRetries;
+	RetryEvent.DelaySeconds = DelaySeconds;
+	RetryEvent.Reason = Reason;
+	RetryEvent.HttpStatus = HttpStatus;
+	State->RetryDelegate.ExecuteIfBound(RetryEvent);
+	if (State->bTerminal || !ActiveRequests.Contains(State->RequestId))
+	{
+		return true;
+	}
+
+	TWeakObjectPtr<UUnrealAIClient> WeakThis(this);
+	State->RetryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		TEXT("UnrealAI request retry"),
+		DelaySeconds,
+		[WeakThis, RequestId = State->RequestId](float DeltaSeconds)
+		{
+			(void)DeltaSeconds;
+			if (UUnrealAIClient* Client = WeakThis.Get())
+			{
+				Client->ResumeRequestAfterBackoff(RequestId);
+			}
+			return false;
+		});
+	return true;
+}
+
+void UUnrealAIClient::CompleteOneShotRequest(
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+	const FUnrealAIChatResponse& Response,
+	const FUnrealAIError& Error)
+{
+	if (!State.IsValid() || State->bTerminal)
+	{
+		return;
+	}
+
+	State->bTerminal = true;
+	UnrealAIClientPrivate::RemoveRetryTicker(State);
+	UnrealAIClientPrivate::DetachHttpRequest(State);
+	ActiveRequests.Remove(State->RequestId);
+	State->RequestData.Headers.Reset();
+	State->RequestData.Body.Reset();
+
+	State->CompletionDelegate.ExecuteIfBound(Response, Error);
+	State->CompletionDelegate.Unbind();
+	State->RetryDelegate.Unbind();
+}
+
 void UUnrealAIClient::CompleteStreamRequest(
-	const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>& State,
+	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
 	EUnrealAIChatStreamStatus Status,
 	const FUnrealAIError& Error)
 {
@@ -648,19 +995,17 @@ void UUnrealAIClient::CompleteStreamRequest(
 	}
 
 	State->bTerminal = true;
+	UnrealAIClientPrivate::RemoveRetryTicker(State);
 	{
 		const FScopeLock Lock(&State->QueueMutex);
 		State->bAcceptData = false;
 		State->PendingChunks.Reset();
 		State->bDrainScheduled = false;
 	}
-	ActiveStreamRequests.Remove(State->RequestId);
-	if (State->HttpRequest.IsValid())
-	{
-		State->HttpRequest->OnStatusCodeReceived().Unbind();
-		State->HttpRequest->OnProcessRequestComplete().Unbind();
-		State->HttpRequest.Reset();
-	}
+	UnrealAIClientPrivate::DetachHttpRequest(State);
+	ActiveRequests.Remove(State->RequestId);
+	State->RequestData.Headers.Reset();
+	State->RequestData.Body.Reset();
 
 	State->ProviderState.Response.RawJson.Reset();
 	State->ProviderState.Response.Choices.Sort(
@@ -676,48 +1021,193 @@ void UUnrealAIClient::CompleteStreamRequest(
 	State->TerminalDelegate.ExecuteIfBound(Result);
 	State->EventDelegate.Unbind();
 	State->TerminalDelegate.Unbind();
+	State->RetryDelegate.Unbind();
 }
 
-void UUnrealAIClient::CancelAllStreams()
+void UUnrealAIClient::CancelAllRequests()
 {
-	TArray<TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>> States;
-	ActiveStreamRequests.GenerateValueArray(States);
-	ActiveStreamRequests.Reset();
-	for (const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>& State : States)
+	TArray<TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>> States;
+	ActiveRequests.GenerateValueArray(States);
+	ActiveRequests.Reset();
+	for (const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State : States)
 	{
 		if (!State.IsValid())
 		{
 			continue;
 		}
+
+		State->bTerminal = true;
+		UnrealAIClientPrivate::RemoveRetryTicker(State);
 		{
 			const FScopeLock Lock(&State->QueueMutex);
 			State->bAcceptData = false;
 			State->PendingChunks.Reset();
 		}
-		State->bTerminal = true;
+		State->CompletionDelegate.Unbind();
 		State->EventDelegate.Unbind();
 		State->TerminalDelegate.Unbind();
+		State->RetryDelegate.Unbind();
 		const FHttpRequestPtr HttpRequest = State->HttpRequest;
+		UnrealAIClientPrivate::DetachHttpRequest(State);
+		State->RequestData.Headers.Reset();
+		State->RequestData.Body.Reset();
 		if (HttpRequest.IsValid())
 		{
-			HttpRequest->OnStatusCodeReceived().Unbind();
-			HttpRequest->OnProcessRequestComplete().Unbind();
-			State->HttpRequest.Reset();
 			HttpRequest->CancelRequest();
 		}
 	}
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+
+void FUnrealAIClientTestAccess::RunRetryCoordinatorTests(FAutomationTestBase& Test)
+{
+	UUnrealAIClient* Client = NewObject<UUnrealAIClient>();
+	Test.TestNotNull(TEXT("The retry coordinator test client is created"), Client);
+	if (!Client)
+	{
+		return;
+	}
+
+	auto MakeState = [Client](UnrealAIClientPrivate::ERequestMode Mode)
+	{
+		const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> State =
+			MakeShared<FUnrealAIRequestState, ESPMode::ThreadSafe>();
+		State->RequestId = FGuid::NewGuid();
+		State->Mode = Mode;
+		State->RequestData.ResolvedModel = TEXT("test-model");
+		State->RetryPolicy.MaxRetries = 2;
+		State->RetryPolicy.InitialDelaySeconds = 60.0f;
+		State->RetryPolicy.MaxDelaySeconds = 60.0f;
+		Client->ActiveRequests.Add(State->RequestId, State);
+		return State;
+	};
+
+	FUnrealAIError RetryError;
+	RetryError.bIsError = true;
+	RetryError.Type = TEXT("transport_error");
+	RetryError.Code = TEXT("request_transport_failed");
+
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> RestartState =
+		MakeState(UnrealAIClientPrivate::ERequestMode::OneShot);
+	int32 RetryEventCount = 0;
+	FUnrealAIRetryEvent ObservedRetryEvent;
+	RestartState->RetryDelegate = FUnrealAIRetryNativeDelegate::CreateLambda(
+		[&RetryEventCount, &ObservedRetryEvent](const FUnrealAIRetryEvent& Event)
+		{
+			++RetryEventCount;
+			ObservedRetryEvent = Event;
+		});
+	int32 StartAttemptCount = 0;
+	RestartState->StartAttemptForTesting = [&StartAttemptCount]()
+	{
+		++StartAttemptCount;
+	};
+
+	Test.TestTrue(
+		TEXT("A retryable failure enters backoff"),
+		Client->TryScheduleRetry(
+			RestartState,
+			EUnrealAIRetryReason::ConnectionError,
+			0,
+			RetryError,
+			FHttpResponsePtr()));
+	Test.TestTrue(TEXT("Backoff marks the request as waiting"), RestartState->bWaitingForRetry);
+	Test.TestTrue(TEXT("Backoff owns a cancellable ticker"), RestartState->RetryTickerHandle.IsValid());
+	Test.TestEqual(TEXT("Backoff emits one retry event"), RetryEventCount, 1);
+	Test.TestEqual(
+		TEXT("The retry event identifies its logical request"),
+		ObservedRetryEvent.RequestHandle.Id,
+		RestartState->RequestId);
+
+	UnrealAIClientPrivate::RemoveRetryTicker(RestartState);
+	Client->ResumeRequestAfterBackoff(RestartState->RequestId);
+	Test.TestEqual(TEXT("Resuming backoff starts exactly one attempt"), StartAttemptCount, 1);
+	Test.TestEqual(TEXT("The resumed request advances its attempt number"), RestartState->AttemptNumber, 1);
+	Test.TestFalse(TEXT("The resumed request is no longer waiting"), RestartState->bWaitingForRetry);
+
+	FUnrealAIRequestHandle RestartHandle;
+	RestartHandle.Id = RestartState->RequestId;
+	Test.TestTrue(TEXT("The resumed test request can be cancelled"), Client->CancelRequest(RestartHandle));
+
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> WaitingState =
+		MakeState(UnrealAIClientPrivate::ERequestMode::OneShot);
+	int32 TerminalCount = 0;
+	FUnrealAIError TerminalError;
+	WaitingState->CompletionDelegate = FUnrealAIChatCompletionNativeDelegate::CreateLambda(
+		[&TerminalCount, &TerminalError](const FUnrealAIChatResponse& Response, const FUnrealAIError& Error)
+		{
+			(void)Response;
+			++TerminalCount;
+			TerminalError = Error;
+		});
+	Test.TestTrue(
+		TEXT("A second request can wait in backoff"),
+		Client->TryScheduleRetry(
+			WaitingState,
+			EUnrealAIRetryReason::Timeout,
+			0,
+			RetryError,
+			FHttpResponsePtr()));
+
+	FUnrealAIRequestHandle WaitingHandle;
+	WaitingHandle.Id = WaitingState->RequestId;
+	Test.TestTrue(TEXT("Cancellation succeeds during backoff"), Client->CancelRequest(WaitingHandle));
+	Test.TestEqual(TEXT("Backoff cancellation emits one terminal callback"), TerminalCount, 1);
+	Test.TestEqual(
+		TEXT("Backoff cancellation uses the stable cancellation code"),
+		TerminalError.Code,
+		FString(TEXT("request_cancelled")));
+	Test.TestFalse(TEXT("Backoff cancellation removes its ticker"), WaitingState->RetryTickerHandle.IsValid());
+	Test.TestFalse(TEXT("Backoff cancellation removes the active request"), Client->ActiveRequests.Contains(WaitingHandle.Id));
+	Test.TestFalse(TEXT("A terminal request cannot be cancelled twice"), Client->CancelRequest(WaitingHandle));
+	Test.TestEqual(TEXT("A second cancellation does not duplicate completion"), TerminalCount, 1);
+
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> StreamState =
+		MakeState(UnrealAIClientPrivate::ERequestMode::Stream);
+	StreamState->bSawStreamEvent = true;
+	int32 StreamRetryEventCount = 0;
+	StreamState->RetryDelegate = FUnrealAIRetryNativeDelegate::CreateLambda(
+		[&StreamRetryEventCount](const FUnrealAIRetryEvent& Event)
+		{
+			(void)Event;
+			++StreamRetryEventCount;
+		});
+	int32 StreamTerminalCount = 0;
+	FUnrealAIChatStreamResult StreamResult;
+	StreamState->TerminalDelegate = FUnrealAIChatStreamTerminalNativeDelegate::CreateLambda(
+		[&StreamTerminalCount, &StreamResult](const FUnrealAIChatStreamResult& Result)
+		{
+			++StreamTerminalCount;
+			StreamResult = Result;
+		});
+	Test.TestFalse(
+		TEXT("A stream is not replayed after a complete SSE event"),
+		Client->TryScheduleRetry(
+			StreamState,
+			EUnrealAIRetryReason::ConnectionError,
+			0,
+			RetryError,
+			FHttpResponsePtr()));
+	Test.TestEqual(TEXT("An ineligible stream emits no retry event"), StreamRetryEventCount, 0);
+	Test.TestFalse(TEXT("An ineligible stream creates no retry ticker"), StreamState->RetryTickerHandle.IsValid());
+
+	FUnrealAIRequestHandle StreamHandle;
+	StreamHandle.Id = StreamState->RequestId;
+	Test.TestTrue(TEXT("The stream test request can be cancelled"), Client->CancelRequest(StreamHandle));
+	Test.TestEqual(TEXT("Stream cancellation emits one terminal callback"), StreamTerminalCount, 1);
+	Test.TestEqual(
+		TEXT("Stream cancellation remains a distinct terminal status"),
+		StreamResult.Status,
+		EUnrealAIChatStreamStatus::Cancelled);
+	Test.TestFalse(TEXT("Stream cancellation does not report a failure error"), StreamResult.Error.bIsError);
+	Test.TestTrue(TEXT("The retry coordinator leaves no active test requests"), Client->ActiveRequests.IsEmpty());
+}
+
+#endif
+
 void UUnrealAIClient::BeginDestroy()
 {
-	CancelAllStreams();
-	for (const FHttpRequestPtr& Request : InFlightRequests)
-	{
-		if (Request.IsValid())
-		{
-			Request->CancelRequest();
-		}
-	}
-	InFlightRequests.Reset();
+	CancelAllRequests();
 	Super::BeginDestroy();
 }

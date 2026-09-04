@@ -5,7 +5,10 @@
 #include "UnrealAITypes.h"
 #include "UnrealAIClient.generated.h"
 
-struct FUnrealAIStreamRequestState;
+struct FUnrealAIRequestState;
+#if WITH_DEV_AUTOMATION_TESTS
+struct FUnrealAIClientTestAccess;
+#endif
 
 UCLASS(BlueprintType)
 class UNREALAI_API UUnrealAIClient : public UObject
@@ -25,38 +28,57 @@ public:
 	UFUNCTION(BlueprintPure, Category = "UnrealAI")
 	const FUnrealAIProviderConfig& GetProviderConfig() const;
 
-	void CreateChatCompletion(const FUnrealAIChatRequest& Request, FUnrealAIChatCompletionNativeDelegate CompletionDelegate);
+	FUnrealAIRequestHandle CreateChatCompletion(
+		const FUnrealAIChatRequest& Request,
+		FUnrealAIChatCompletionNativeDelegate CompletionDelegate,
+		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
 	FUnrealAIRequestHandle StreamChatCompletion(
 		const FUnrealAIChatRequest& Request,
 		FUnrealAIChatStreamEventNativeDelegate EventDelegate,
-		FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate);
+		FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate,
+		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
 	bool CancelRequest(const FUnrealAIRequestHandle& RequestHandle);
 
 	virtual void BeginDestroy() override;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FUnrealAIClientTestAccess;
+#endif
+
 	FUnrealAIProviderConfig ProviderConfig;
 	bool bConfigured = false;
-	TArray<FHttpRequestPtr> InFlightRequests;
-	TMap<FGuid, TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>> ActiveStreamRequests;
+	TMap<FGuid, TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>> ActiveRequests;
 
 	FString ResolveApiKey() const;
+	void StartRequestAttempt(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State);
+	void ResumeRequestAfterBackoff(const FGuid& RequestId);
 	void HandleChatCompletionResponse(
 		FHttpRequestPtr HttpRequest,
 		FHttpResponsePtr HttpResponse,
 		bool bWasSuccessful,
-		EUnrealAIProviderApi ProviderApi,
-		FString ResolvedModel,
-		FUnrealAIChatCompletionNativeDelegate CompletionDelegate);
+		FGuid RequestId,
+		int32 AttemptNumber);
 	void DrainStreamRequest(const FGuid& RequestId);
 	void HandleStreamResponse(
 		FHttpRequestPtr HttpRequest,
 		FHttpResponsePtr HttpResponse,
 		bool bWasSuccessful,
-		FGuid RequestId);
+		FGuid RequestId,
+		int32 AttemptNumber);
+	bool TryScheduleRetry(
+		const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+		EUnrealAIRetryReason Reason,
+		int32 HttpStatus,
+		const FUnrealAIError& Error,
+		const FHttpResponsePtr& HttpResponse);
+	void CompleteOneShotRequest(
+		const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+		const FUnrealAIChatResponse& Response,
+		const FUnrealAIError& Error);
 	void CompleteStreamRequest(
-		const TSharedPtr<FUnrealAIStreamRequestState, ESPMode::ThreadSafe>& State,
+		const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
 		EUnrealAIChatStreamStatus Status,
 		const FUnrealAIError& Error);
-	void CancelAllStreams();
+	void CancelAllRequests();
 };

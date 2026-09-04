@@ -26,7 +26,7 @@ Regenerate project files if needed and rebuild. C++ consumers must add `UnrealAI
 
 ## Configure providers
 
-Project Settings → Plugins → UnrealAI exposes provider profiles. A profile selects an `EUnrealAIProviderApi` protocol and supplies its base URL, default model, environment-variable names, timeout, and optional headers.
+Project Settings → Plugins → UnrealAI exposes provider profiles. A profile selects an `EUnrealAIProviderApi` protocol and supplies its base URL, default model, environment-variable names, timeout, retry policy, and optional headers.
 
 For local editor development, copy the plugin's `.env.example` to the consuming project's root as `.env`, then add only the keys needed by that project. UnrealAI loads the project-root file before resolving a profile; an existing process environment variable takes precedence.
 
@@ -45,10 +45,24 @@ Never store a real API key in project settings, Blueprint assets, logs, screensh
 `UUnrealAIProviders` provides a clean provider-level creation surface:
 
 ```cpp
+// Declare these members on the UObject that owns the request.
+UPROPERTY()
+TObjectPtr<UUnrealAIClient> UnrealAIClient;
+
+FUnrealAIRequestHandle ActiveCompletion;
+
+void HandleChatCompletion(
+    const FUnrealAIChatResponse& Response,
+    const FUnrealAIError& Error);
+void HandleRetry(const FUnrealAIRetryEvent& RetryEvent);
+```
+
+Then create the retained client and request from that object's implementation:
+
+```cpp
 #include "UnrealAIBlueprintLibrary.h"
 #include "UnrealAIProviders.h"
 
-// UnrealAIClient is a UPROPERTY on this UObject so it remains alive in flight.
 FUnrealAIError ConfigError;
 UnrealAIClient = UUnrealAIProviders::Anthropic(this, ConfigError);
 if (!UnrealAIClient)
@@ -61,11 +75,14 @@ const FUnrealAIChatRequest Request =
     UUnrealAIBlueprintLibrary::MakeSimpleChatRequest(
         TEXT("Summarize this level objective in one sentence."));
 
-UnrealAIClient->CreateChatCompletion(
+ActiveCompletion = UnrealAIClient->CreateChatCompletion(
     Request,
     FUnrealAIChatCompletionNativeDelegate::CreateUObject(
         this,
-        &ThisClass::HandleChatCompletion));
+        &ThisClass::HandleChatCompletion),
+    FUnrealAIRetryNativeDelegate::CreateUObject(
+        this,
+        &ThisClass::HandleRetry));
 ```
 
 The built-in factories are:
@@ -107,7 +124,7 @@ ActiveStream = UnrealAIClient->StreamChatCompletion(
         }));
 ```
 
-Keep the client alive as a `UPROPERTY`. Store the returned `FUnrealAIRequestHandle` when cancellation is needed, then call `CancelRequest(ActiveStream)`. Event and terminal callbacks run in order on the game thread. The terminal callback fires exactly once with `Completed`, `Failed`, or `Cancelled`; its response is complete on success and partial after a failure or cancellation.
+Keep the client alive as a `UPROPERTY`. Store the returned `FUnrealAIRequestHandle` when cancellation is needed, then call `CancelRequest(ActiveStream)`. Event, retry, and terminal callbacks run in order on the game thread. The terminal callback fires exactly once with `Completed`, `Failed`, or `Cancelled`; its response is complete on success and partial after a failure or cancellation.
 
 ## Blueprint usage
 
@@ -115,11 +132,13 @@ Use `Make Simple Chat Request`, then call `Create Chat Completion (UnrealAI)` fo
 
 - `Provider Name`: `OpenAI`, `XAI`, `Anthropic`, `Gemini`, a custom profile, or empty to use the default.
 - `Completed`: receives `FUnrealAIChatResponse`; use `Get First Choice Content` and branch on `Has Content`.
+- `Retrying`: reports the retry number, delay, reason, and HTTP status before a new attempt.
 - `Failed`: receives `FUnrealAIError`; handle its message without exposing request or credential data.
+- `Cancelled`: is the distinct one-shot cancellation path.
 
 The streaming node adds `Event` and `Cancelled` paths. Append `Event.Text Delta` when `Event.Type` is `Text Delta`, and handle `Completed`, `Failed`, and `Cancelled` as distinct terminal paths. Its exposed `Async Action` proxy has a `Cancel` function. Cancellation returns the accumulated response through `Cancelled`.
 
-For actor-centric gameplay, add `UnrealAIChatComponent` and call `Send Prompt`. Configure `Provider Name`, optional `Model`, `System Prompt`, and sampling values on the component. Bind `On Chat Completed` and `On Chat Failed` before sending.
+For actor-centric gameplay, add `UnrealAIChatComponent` and call `Send Prompt`. Configure `Provider Name`, optional `Model`, `System Prompt`, sampling values, and `Retry Options` on the component. Bind `On Chat Completed`, `On Chat Retrying`, `On Chat Failed`, and `On Chat Cancelled` before sending. `Cancel Active Completions` stops every one-shot request currently owned by the component.
 
 For component streaming, call `Send Prompt Stream` or `Send Messages Stream`, bind the four `On Chat Stream ...` events, and use `Cancel Active Stream` when needed. A component accepts one active stream at a time.
 
@@ -156,9 +175,25 @@ The common text surface maps as follows:
 
 OpenAI-compatible streams require a valid terminal marker such as `[DONE]` or a finish reason for every expected choice. Anthropic streams require `message_stop`. Gemini streams complete at a clean HTTP EOF after valid SSE data. A truncated stream fails instead of reporting a misleading success.
 
-UnrealAI incrementally decodes UTF-8 SSE frames and supports CRLF or LF separators, comments, and multi-line `data` fields. The parser bounds an individual SSE event to 1 MiB, and the HTTP-to-game-thread handoff queue is bounded to 4 MiB. If the game thread cannot drain that queue before the limit is reached, the stream fails with `stream_buffer_overflow` instead of continuing to consume memory. Streaming responses must use the `text/event-stream` content type. `TimeoutSeconds` is an activity timeout for streams, so receiving bytes resets the timeout; UnrealAI does not reconnect or retry a broken stream.
+UnrealAI incrementally decodes UTF-8 SSE frames and supports CRLF or LF separators, comments, and multi-line `data` fields. The parser bounds an individual SSE event to 1 MiB, and the HTTP-to-game-thread handoff queue is bounded to 4 MiB. If the game thread cannot drain that queue before the limit is reached, the stream fails with `stream_buffer_overflow` instead of continuing to consume memory. Streaming responses must use the `text/event-stream` content type. `TimeoutSeconds` is an activity timeout for each streaming HTTP attempt, so receiving bytes resets the timeout.
 
 Stream callbacks are delivered in provider order on the game thread. The terminal `FUnrealAIChatStreamResult` is emitted once and includes the accumulated normalized response. `Response.RawJson` is intentionally empty for an aggregate stream because there is no single provider response object; inspect each event's `RawJson` when provider-native data is needed. Treat it as sensitive prompt or response content and do not log it by default.
+
+## Retry and backoff
+
+Every provider profile has an `FUnrealAIRetryPolicy`. The defaults are two retries after the initial attempt, a one-second initial delay, exponential factor two, additive random jitter from zero through 25 percent, and a 60-second per-retry ceiling. `TimeoutSeconds` applies independently to each one-shot HTTP attempt; streams retain their per-attempt activity-timeout behavior.
+
+UnrealAI retries connection errors, timeouts, an empty clean stream, and HTTP `408`, `409`, `429`, `500`, `502`, `503`, `504`, and `529`. It does not retry permanent quota or billing failures identified by provider error data. A numeric or HTTP-date `Retry-After` response header is treated as a minimum delay. If the requested server delay exceeds `MaxDelaySeconds`, the request fails instead of waiting beyond the configured ceiling.
+
+`FUnrealAIChatRequest::RetryOptions` has three modes:
+
+- `UseProviderPolicy` inherits the configured profile.
+- `Disabled` makes only the initial attempt.
+- `OverrideMaxRetries` changes only the retry count for that request; the provider's timing settings still apply.
+
+Pass `FUnrealAIRetryNativeDelegate` as the final argument to either native request method to observe `FUnrealAIRetryEvent`. The event contains the logical request handle, one-based retry number, maximum retries, selected delay, reason, and HTTP status. The Blueprint async nodes expose the same information on `Retrying`; the component exposes `On Chat Retrying` and `On Chat Stream Retrying`. Use the request handle to correlate retry notifications when a component owns multiple one-shot completions.
+
+Streaming retries are intentionally conservative: a stream may retry only before UnrealAI has parsed its first complete SSE data event. After an event has arrived, replaying the request could duplicate text or provider events, so a later interruption is terminal and returns the accumulated partial response. Cancellation remains valid during backoff and emits exactly one cancellation terminal result.
 
 ## Error and response normalization
 

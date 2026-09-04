@@ -21,6 +21,54 @@ enum class EUnrealAIProviderApi : uint8
 	GeminiGenerateContent UMETA(DisplayName = "Google Gemini Generate Content")
 };
 
+UENUM(BlueprintType)
+enum class EUnrealAIRetryMode : uint8
+{
+	UseProviderPolicy UMETA(DisplayName = "Use Provider Policy"),
+	Disabled UMETA(DisplayName = "Disabled"),
+	OverrideMaxRetries UMETA(DisplayName = "Override Maximum Retries")
+};
+
+UENUM(BlueprintType)
+enum class EUnrealAIRetryReason : uint8
+{
+	ConnectionError UMETA(DisplayName = "Connection Error"),
+	Timeout UMETA(DisplayName = "Timeout"),
+	HttpError UMETA(DisplayName = "HTTP Error"),
+	EmptyStream UMETA(DisplayName = "Empty Stream")
+};
+
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIRetryPolicy
+{
+	GENERATED_BODY()
+
+	/** Number of retries after the initial attempt. Zero disables automatic retries. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (ClampMin = "0", ClampMax = "10"))
+	int32 MaxRetries = 2;
+
+	/** Base delay before the first retry. Later retries use exponential backoff. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
+	float InitialDelaySeconds = 1.0f;
+
+	/** Maximum time UnrealAI is willing to wait before one retry. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
+	float MaxDelaySeconds = 60.0f;
+};
+
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIRequestRetryOptions
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry")
+	EUnrealAIRetryMode Mode = EUnrealAIRetryMode::UseProviderPolicy;
+
+	/** Used only when Mode is OverrideMaxRetries. Zero disables retries for this request. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (EditCondition = "Mode == EUnrealAIRetryMode::OverrideMaxRetries", ClampMin = "0", ClampMax = "10"))
+	int32 MaxRetries = 2;
+};
+
 USTRUCT(BlueprintType)
 struct UNREALAI_API FUnrealAIProviderConfig
 {
@@ -65,6 +113,9 @@ struct UNREALAI_API FUnrealAIProviderConfig
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HTTP")
 	TMap<FString, FString> AdditionalHeaders;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HTTP|Retry")
+	FUnrealAIRetryPolicy RetryPolicy;
 };
 
 USTRUCT(BlueprintType)
@@ -148,6 +199,10 @@ struct UNREALAI_API FUnrealAIChatRequest
 	/** Optional JSON object merged into the root request payload after standard fields are written. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Advanced", meta = (MultiLine = true))
 	FString AdditionalParametersJson;
+
+	/** Inherit, disable, or override the configured provider's retry count for this request. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reliability")
+	FUnrealAIRequestRetryOptions RetryOptions;
 };
 
 USTRUCT(BlueprintType)
@@ -254,6 +309,33 @@ struct UNREALAI_API FUnrealAIRequestHandle
 	}
 };
 
+USTRUCT(BlueprintType)
+struct UNREALAI_API FUnrealAIRetryEvent
+{
+	GENERATED_BODY()
+
+	/** Identifies the logical request across every HTTP attempt. */
+	UPROPERTY(BlueprintReadOnly, Category = "Retry")
+	FUnrealAIRequestHandle RequestHandle;
+
+	/** One-based retry number. The initial HTTP attempt is not a retry. */
+	UPROPERTY(BlueprintReadOnly, Category = "Retry")
+	int32 RetryNumber = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Retry")
+	int32 MaxRetries = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Retry", meta = (Units = "s"))
+	float DelaySeconds = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Retry")
+	EUnrealAIRetryReason Reason = EUnrealAIRetryReason::HttpError;
+
+	/** HTTP response status, or zero when no provider response was received. */
+	UPROPERTY(BlueprintReadOnly, Category = "Retry")
+	int32 HttpStatus = 0;
+};
+
 UENUM(BlueprintType)
 enum class EUnrealAIChatStreamEventType : uint8
 {
@@ -320,8 +402,10 @@ struct UNREALAI_API FUnrealAIChatStreamResult
 };
 
 DECLARE_DELEGATE_TwoParams(FUnrealAIChatCompletionNativeDelegate, const FUnrealAIChatResponse& /*Response*/, const FUnrealAIError& /*Error*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIRetryNativeDelegate, const FUnrealAIRetryEvent& /*Event*/);
 DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamEventNativeDelegate, const FUnrealAIChatStreamEvent& /*Event*/);
 DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamTerminalNativeDelegate, const FUnrealAIChatStreamResult& /*Result*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FUnrealAIChatCompletionPin, const FUnrealAIChatResponse&, Response, const FUnrealAIError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIRetryPin, const FUnrealAIRetryEvent&, RetryEvent);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamEventPin, const FUnrealAIChatStreamEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamCancelledPin, const FUnrealAIChatResponse&, PartialResponse);
