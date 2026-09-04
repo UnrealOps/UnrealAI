@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/UnrealOps/UnrealAI/compare/v0.3.0...v0.4.0) (2026-09-04)
+
+
+### Features
+
+* **http:** add retry and backoff policy ([#8](https://github.com/UnrealOps/UnrealAI/issues/8)) ([cb5f426](https://github.com/UnrealOps/UnrealAI/commit/cb5f426b0910a836be2a8556c3711622e11a441d))
+
 ## [0.3.0](https://github.com/UnrealOps/UnrealAI/compare/v0.2.0...v0.3.0) (2026-09-03)
 
 
