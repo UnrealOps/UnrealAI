@@ -294,7 +294,9 @@ GEMINI_MODEL=gemini-3.7-flash
 
 For backward compatibility, the XAI profile falls back to `OPENAI_BASE_URL` and `OPENAI_MODEL` only when its `XAI_*` overrides are unset. Custom profiles can target other OpenAI-compatible providers or local gateways by selecting the OpenAI-compatible protocol. API-key overrides stored directly in project settings are supported for development, but environment variables or a trusted server are safer choices.
 
-The shared request covers text messages, system instructions, temperature, top-p, output-token limits, and stop sequences across the native adapters. Provider-specific raw JSON uses that provider's native schema. Streaming normalizes text deltas, choice completion, usage, and errors; non-text provider events remain available as `Provider Event` values with raw JSON. Choice counts and `ResponseFormatJson` remain OpenAI-compatible features; normalized tool calls, reasoning, multimodal helpers, and structured-output helpers for Anthropic and Gemini are not implemented yet.
+The legacy chat request covers text messages, system instructions, sampling, output-token limits, and stop sequences. Its choice count and `ResponseFormatJson` remain OpenAI-compatible features. New **[Responses APIs](Documentation/Responses.md)** add typed function calls/results, refusals, structured-output requests, item-level SSE events, and provider-bound continuation across OpenAI Responses, compatible Chat Completions/xAI, Anthropic Messages, and Gemini generateContent. Existing chat methods and Blueprint assets remain compatible. Reasoning/signatures and sidecar metadata are preserved as opaque provider data; media helpers and an agent executor remain deferred.
+
+For a complete C++ tool round trip, use the [compiled response example](Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIResponseExample.cpp). The sample generator also creates `BP_UnrealAIResponses` and `BP_UnrealAIStreamResponses` with two actual response async nodes; the [Responses guide](Documentation/Responses.md) covers setup and validation.
 
 ## 🗺️ Features and roadmap
 
@@ -311,7 +313,7 @@ The shared request covers text messages, system instructions, temperature, top-p
 | Raw JSON request and message extensions | Available |
 | Provider-neutral SSE text streaming and cancellation | Available |
 | Built-in retry and backoff policy | Available |
-| Responses API abstraction | Planned |
+| Responses API abstraction: typed tools, structured output, continuation | Available |
 | Image, audio, and embedding helpers | Planned |
 
 ## 🤖 Agent skills

@@ -23,9 +23,9 @@ No P0 issue is known at the time of this review. The absence of a known P0 is no
 | P1 | Enforced credential boundary | Open | A packaged game client cannot accidentally contain or expose a hosted-provider secret. |
 | P1 | Release-gated native validation | Open | Every release is qualified by required Unreal compilation and tests on each supported host. |
 | P1 | Runtime resource and latency budgets | Partial | Requests have explicit memory, concurrency, per-frame work, and absolute-time limits. |
-| P1 | Current provider API abstraction | Open | Provider-neutral output items and events support current Responses/Interactions-style APIs. |
-| P2 | End-to-end HTTP lifecycle tests | Open | Deterministic tests exercise the real transport lifecycle, not only parsers and coordinators. |
-| P2 | Normalized safety and refusal outcomes | Open | Gameplay can distinguish refusal, safety blocking, empty success, transport failure, and provider failure. |
+| P1 | Current provider API abstraction | Partial | Responses text/tools/continuation implemented; media, hosted tools, Interactions, and background work remain. |
+| P2 | End-to-end HTTP lifecycle tests | Partial | Responses loopback contracts exercise native/Blueprint HTTP; exhaustive timeout, destruction, and race coverage remains. |
+| P2 | Normalized safety and refusal outcomes | Partial | Responses exposes explicit refusal parts and incomplete status; broader provider safety normalization remains. |
 | P2 | Provider extension interface | Open | A new native wire protocol can be registered without editing or forking the UnrealAI module. |
 | P2 | Platform and engine compatibility evidence | Partial | Support claims are backed by repeatable client, editor, server, and host-platform results. |
 | P2 | Production observability and fleet controls | Open | Integrators can monitor latency, retries, limits, usage, and provider request IDs without logging content. |
@@ -128,39 +128,31 @@ Provider mistakes, hostile compatible endpoints, long generations, network burst
 
 ### Current state
 
-UnrealAI normalizes text chat over OpenAI-compatible Chat Completions, Anthropic Messages, and Gemini `generateContent`. Provider-native data outside the shared text contract is retained as raw JSON or `ProviderEvent` values.
+The additive [Responses API](Responses.md) now normalizes text/refusal parts, function calls/results, structured-output requests, item-level streaming, and provider-bound continuation across native OpenAI Responses, compatible Chat Completions/xAI, Anthropic Messages, and Gemini generateContent. Existing chat methods and Blueprint assets retain their contracts.
 
-This supports ordinary text generation, but it is not a complete provider-neutral abstraction for current model capabilities. OpenAI recommends its Responses API for new projects, and Google recommends the Gemini Interactions API for new integrations. Existing chat and `generateContent` APIs remain useful compatibility surfaces.
+Local history preserves encrypted reasoning and signed provider blocks. Native OpenAI stored continuation is opt-in. The core SDK does not execute tools, orchestrate an agent loop, or translate histories between providers.
 
-### Production risk
+### Remaining production risk
 
-Games that need tools, structured provider events, images, audio, reasoning items, citations, grounding, or durable conversation state must parse provider-specific JSON and build their own lifecycle. That weakens the principal adoption benefit of a provider-neutral SDK and makes gameplay code fragile when providers evolve.
+Media, hosted tools, Gemini Interactions, background response management, and typed representations for every reasoning/citation/grounding field remain outside the normalized contract. Those fields are preserved as opaque provider data. Adapter capabilities do not guarantee support by every model or compatible endpoint, and schema validation remains provider/application-specific.
 
-### Remediation
+### Remaining remediation
 
-1. Define a provider-neutral request and output-item model before adding another endpoint-specific wrapper.
-2. Represent text, tool calls, tool results, reasoning summaries, images/audio references, citations, refusals, and provider extensions as typed items.
-3. Define a common stream lifecycle for item creation, deltas, completion, usage, refusal, and terminal status.
-4. Implement OpenAI Responses and Gemini Interactions adapters, then map Anthropic Messages into the same contract where semantics align.
-5. Keep the current chat API as a compatibility facade with a documented migration path.
-6. Preserve unknown provider fields without requiring normal consumers to inspect raw JSON.
-7. Publish a generated or validated capability matrix so callers can detect unsupported combinations before starting a request.
+1. Add separately scoped media/upload, embedding, hosted-tool, and background APIs when required by real consumers.
+2. Evaluate Gemini Interactions independently; preserve the generateContent adapter and existing compatibility paths.
+3. Add typed metadata only where semantics align across providers, retaining unknown raw fields.
+4. Maintain provider/version fixtures and optional live acceptance tests to detect provider drift.
+5. Keep tool authorization, schema validation, step budgets, durable state, and execution idempotency in the trusted application/backend.
 
-### Acceptance criteria
+### Acceptance and evidence
 
-- The same C++ and Blueprint flow can execute a text request and at least one tool-call round trip across supported providers.
-- Multimodal and refusal items have typed, provider-neutral representations.
-- Streaming maintains item order and exactly-once terminal behavior without silently dropping provider metadata.
-- Unsupported capabilities fail during validation with an actionable error rather than producing malformed provider requests.
-- Existing chat integrations have a tested compatibility and deprecation policy.
-
-Provider direction should be rechecked against the official [OpenAI Chat Completions documentation](https://platform.openai.com/docs/api-reference/chat) and [Gemini Interactions overview](https://ai.google.dev/gemini-api/docs/interactions-overview) whenever this section is updated.
+The native contract runner compiles C++ examples, generates and reloads actual Blueprint response graphs, and exercises two-step tool round trips over all four wire protocols through a credential-free local HTTP fixture. It tests request validation, typed tool assembly, signatures, local/stored continuation construction, streaming, incomplete output, and legacy compatibility. This addresses the initial text/tool abstraction milestone, not the deferred capabilities above or certification of live models.
 
 ## P2: Add end-to-end HTTP lifecycle tests
 
 ### Current state
 
-Offline automation exercises serialization, provider fixtures, SSE parsing, queue limits, retry classification, retry coordination, Blueprint reflection, and helper behavior. It does not yet drive the full `FHttpModule` request lifecycle against a deterministic endpoint.
+Offline automation exercises serialization, provider fixtures, SSE parsing, queue limits, retry classification, retry coordination, Blueprint reflection, and helpers. Responses sample contracts now drive actual `FHttpModule` requests through a deterministic loopback HTTP endpoint using both C++ and generated Blueprint nodes across all four protocols. They cover tool continuation, split delivery, Unicode, retry success, early EOF/no replay, cancellation, and game-thread terminal delivery. This does not yet cover every timeout, destruction, or race scenario.
 
 ### Production risk
 
@@ -183,7 +175,7 @@ Parser and coordinator tests can pass while regressions remain in status-code ca
 
 ### Current state
 
-Provider HTTP errors are normalized, but successful provider responses can legitimately contain no text choice. Safety ratings, refusal details, grounding, and other provider-specific outcomes may exist only in raw JSON. For example, a Gemini safety block can arrive in a successful HTTP response without a normal candidate.
+Provider HTTP errors are normalized, but successful responses can legitimately contain no visible text. The Responses API distinguishes incomplete generations and exposes explicit OpenAI refusals and supported Gemini block outcomes as refusal parts. The legacy chat contract remains unchanged. Detailed safety ratings, grounding, and some provider-specific finish categories still require raw metadata or finish-reason handling.
 
 ### Production risk
 

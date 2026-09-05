@@ -27,6 +27,7 @@ STREAMING_REFERENCE_PATH = SKILLS_ROOT / "unrealai-cpp/references/streaming-clie
 
 SKILL_PACKAGES = {
     "unrealai-cpp": (
+        "references/responses-client.md",
         "references/client-setup.md",
         "references/one-shot-client.md",
         "references/streaming-client.md",
@@ -39,6 +40,7 @@ SKILL_PACKAGES = {
         "references/backend-deployment.md",
     ),
     "unrealai-blueprints": (
+        "references/responses-actions.md",
         "references/async-actions.md",
         "references/chat-component.md",
         "references/requests-and-providers.md",
