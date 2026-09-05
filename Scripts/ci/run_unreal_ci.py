@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform as host_platform
 import shutil
@@ -14,6 +15,7 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SKILL_CONTRACT_PATH = REPOSITORY_ROOT / "Scripts/ci/skill_contracts.json"
 PLATFORM_CONFIG = {
     "Mac": {
         "host_system": "Darwin",
@@ -116,7 +118,13 @@ def main() -> int:
     package_directory = output_root / "Package"
     host_project_directory = output_root / "HostProject"
     report_directory = output_root / "AutomationReport"
-    for generated_directory in (package_directory, host_project_directory, report_directory):
+    skill_contract_directory = output_root / "SkillContracts"
+    for generated_directory in (
+        package_directory,
+        host_project_directory,
+        report_directory,
+        skill_contract_directory,
+    ):
         if generated_directory.exists():
             raise RuntimeError(
                 f"CI output path already exists: {generated_directory}. "
@@ -124,6 +132,7 @@ def main() -> int:
             )
 
     run([sys.executable, str(REPOSITORY_ROOT / "Scripts/ci/validate_plugin.py")])
+    run([sys.executable, str(REPOSITORY_ROOT / "Scripts/ci/validate_skills.py")])
     run(
         uat_command(
             run_uat,
@@ -155,11 +164,23 @@ def main() -> int:
             target_platform,
         )
     )
+    contract = json.loads(SKILL_CONTRACT_PATH.read_text(encoding="utf-8"))
+    report_check = [
+        sys.executable,
+        str(REPOSITORY_ROOT / "Scripts/ci/check_automation_report.py"),
+        str(report_directory / "index.json"),
+    ]
+    for test_name in contract["requiredPluginTests"]:
+        report_check.extend(("--require", test_name))
+    run(report_check)
     run(
         [
             sys.executable,
-            str(REPOSITORY_ROOT / "Scripts/ci/check_automation_report.py"),
-            str(report_directory / "index.json"),
+            str(REPOSITORY_ROOT / "Scripts/ci/run_skill_contracts.py"),
+            "--platform",
+            target_platform,
+            "--output-dir",
+            str(skill_contract_directory),
         ]
     )
 

@@ -1,6 +1,6 @@
 ---
 name: unrealai-cpp
-description: Implement, review, or debug native C++ integrations with the UnrealAI Unreal Engine plugin, including provider configuration, one-shot or streaming chat, retries, cancellation, callbacks, structured output, and module dependencies. Use for C++ work; use unrealai-blueprints for Blueprint-only flows.
+description: Implement, review, deploy, or debug native C++ and mixed C++/Blueprint integrations with the UnrealAI Unreal Engine plugin, including production client, dedicated-server, and backend boundaries, multi-turn state, provider configuration, chat, streaming, retries, cancellation, and module dependencies. Use for C++-owned work; use unrealai-blueprints for Blueprint-only flows.
 ---
 
 # UnrealAI C++ SDK
@@ -9,7 +9,7 @@ Build against the API in the current checkout. Do not infer UnrealAI behavior fr
 
 ## Ground the task
 
-Treat the directory containing `UnrealAI.uplugin` as the plugin root. Before changing consumer code, inspect these public contracts because the checkout may be newer than this skill:
+Treat the directory containing `UnrealAI.uplugin` as the plugin root. Inspect only the public headers that own the selected integration because the checkout may be newer than this skill:
 
 - `Source/UnrealAI/Public/UnrealAIClient.h`
 - `Source/UnrealAI/Public/UnrealAIProviders.h`
@@ -19,15 +19,28 @@ Treat the directory containing `UnrealAI.uplugin` as the plugin root. Before cha
 - `Source/UnrealAI/Public/UnrealAIBlueprintLibrary.h`
 - `Source/UnrealAI/Public/UnrealAITypes.h`
 
-Read [references/cpp-api.md](references/cpp-api.md) whenever implementing or reviewing an integration. It contains the supported API surface, ownership rules, and a complete native example.
+Load references by integration type; do not read unrelated references:
+
+- [references/client-setup.md](references/client-setup.md): module dependency, provider factories, dynamic/custom profiles, request fields, and shared response/error rules.
+- [references/one-shot-client.md](references/one-shot-client.md): direct `UUnrealAIClient::CreateChatCompletion` ownership, cancellation, retry, and complete example.
+- [references/streaming-client.md](references/streaming-client.md): direct `StreamChatCompletion`, event/terminal contracts, and the complete compile-tested actor.
+- [references/chat-component.md](references/chat-component.md): actor-component setup, stateless prompt behavior, concurrency limits, and component cancellation.
+- [references/multi-turn-client.md](references/multi-turn-client.md): native conversation history, commit/rollback, bounds, and cancellation.
+- [references/streaming-conversation.md](references/streaming-conversation.md): combined multi-turn streaming with one transactional owner; prefer this over loading the separate streaming and multi-turn references for that scenario.
+- [references/mixed-integration.md](references/mixed-integration.md): C++/Blueprint ownership boundaries and reflected presentation surfaces.
+- [references/packaged-client-deployment.md](references/packaged-client-deployment.md): player-controlled clients, listen servers, and compatible game-backend proxies.
+- [references/dedicated-server-deployment.md](references/dedicated-server-deployment.md): controlled Unreal dedicated servers calling providers.
+- [references/backend-deployment.md](references/backend-deployment.md): external backend policy, compatible endpoints, and streaming relays.
 
 ## Choose the integration
 
 - Prefer `UUnrealAIProviders::OpenAI`, `XAI`, `Anthropic`, or `Gemini` to create a configured `UUnrealAIClient` for a built-in provider.
 - Use `UUnrealAIClient::ConfigureFromSettings` when the provider name is selected dynamically, and `OpenAICompatible` or `OpenAICompatibleFromProfile` for custom compatible gateways.
 - Use `CreateChatCompletion` for a single final response. Use `StreamChatCompletion` for incremental text and a final or partial aggregate. Both return an `FUnrealAIRequestHandle`; retain it when cancellation is needed.
-- Prefer `UUnrealAIChatComponent` for an actor-owned conversation interface with one-shot or streaming send functions and multicast result events.
+- Prefer `UUnrealAIChatComponent` for an actor-owned request interface with one-shot or streaming send functions and multicast result events. The component does not retain conversation history between calls.
 - Use `UUnrealAIBlueprintLibrary` helpers from C++ when they make request or response handling clearer; they are not Blueprint-only.
+- For a mixed feature, choose one owner for conversation history and request state. Prefer C++ ownership when the request runs on an authoritative server. The local `AUnrealAIMultiTurnExample` exposes full SDK failure/retry structs; narrow those to allow-listed application DTOs before sending them to an untrusted client.
+- Treat a listen server as an untrusted packaged client for credential decisions. Only a controlled dedicated server or backend may own a long-lived hosted-provider key.
 
 Preserve the integration style already used by the consumer unless the user asks for a redesign.
 
@@ -41,13 +54,10 @@ Preserve the integration style already used by the consumer unless the user asks
 - Handle `FUnrealAIError` before reading the response, and tolerate a successful response with no choices.
 - Leave `Request.Model` empty when the configured provider's default model is intended.
 - Do not set `bStream`; it is deprecated. Choose `CreateChatCompletion` or `StreamChatCompletion` explicitly.
-- Let `FUnrealAIChatRequest::RetryOptions` inherit the provider policy unless the caller explicitly needs to disable retries or override their count. Observe retries with `FUnrealAIRetryNativeDelegate` when telemetry or UI state matters.
-- Treat a request handle as one logical operation across every attempt. Retry events carry that same handle for correlation. `CancelRequest` also cancels a request waiting in backoff, and one-shot cancellation completes with the stable `request_cancelled` error code.
-- Handle all streaming terminal statuses. `Completed` contains the final aggregate; `Failed` and `Cancelled` contain any partial response. Treat the terminal callback as exactly-once and stream callbacks as ordered on the game thread.
-- Do not implement stream replay after a complete SSE data event. UnrealAI retries a stream only before that boundary to prevent duplicated output.
-- Use `CancelRequest` only with a valid handle returned by the same client. Do not treat cancellation as failure or discard its partial response.
-- Consume `TextDelta`, `ChoiceFinished`, and `Usage` as normalized events. Treat `ProviderEvent` and all raw JSON as provider-specific and potentially sensitive.
+- Treat a request handle as one logical operation across retries and use it only with the client that returned it.
+- Give conversation history, request state, and commit/rollback policy exactly one owner.
 - Never hardcode, print, commit, or package API keys. A project-root `.env` is for local development. Shipped clients should call a trusted backend that owns hosted-provider secrets.
+- UnrealAI does not currently enforce the production credential boundary, authenticate players, authorize requests, moderate content, impose per-player budgets, or provide a circuit breaker. Add these at the application/backend layer and document the selected deployment boundary.
 - Keep ordinary integration code platform-neutral. Use Unreal abstractions such as `FPlatformMisc`, `FPaths`, and the plugin API instead of OS-specific environment or HTTP code.
 
 ## Verify the result
@@ -56,7 +66,8 @@ Match validation effort to the change:
 
 1. Build the affected Unreal target on the current native host.
 2. Run `Scripts/ci/validate_plugin.py` with the host's Python 3 launcher when that script is available.
-3. For plugin changes, set `UNREAL_ENGINE_ROOT` using the host's normal environment mechanism, then run `Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>` with Python 3 on the matching host.
-4. Keep automated tests offline. Test request construction, retry classification and timing, SSE framing, provider event fixtures, cancellation contracts, response helpers, and error paths without real provider credentials.
+3. For skill or recipe changes, set `UNREAL_ENGINE_ROOT` using the host's normal environment mechanism, then run `Scripts/ci/run_skill_contracts.py --platform <Mac|Win64|Linux>`. This compiles an isolated sample copy, regenerates its Blueprint asset, and requires every test listed in `Scripts/ci/skill_contracts.json` to execute successfully.
+4. For plugin changes, run `Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>`; the full driver packages the plugin, runs its offline automation, and invokes the skill contracts.
+5. Keep automated tests offline. Test request construction, retry classification and timing, SSE framing, provider event fixtures, cancellation contracts, response helpers, and error paths without real provider credentials.
 
 If only one host is available, report which native platform was exercised rather than claiming cross-platform compilation.

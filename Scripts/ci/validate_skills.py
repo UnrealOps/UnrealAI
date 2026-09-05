@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validate repository-local UnrealAI skills against the current public API."""
+"""Lint repository-local UnrealAI skill packaging and native-contract wiring."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -13,118 +14,42 @@ REPOSITORY_ROOT = Path(
     os.environ.get("UNREALAI_REPOSITORY_ROOT", Path(__file__).resolve().parents[2])
 ).resolve()
 SKILLS_ROOT = REPOSITORY_ROOT / ".agents" / "skills"
-PUBLIC_SOURCE = "\n".join(
-    path.read_text(encoding="utf-8")
-    for path in sorted((REPOSITORY_ROOT / "Source" / "UnrealAI" / "Public").glob("*.h"))
+CONTRACT_PATH = REPOSITORY_ROOT / "Scripts/ci/skill_contracts.json"
+STREAMING_EXAMPLE_HEADER_PATH = (
+    REPOSITORY_ROOT
+    / "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIStreamingExample.h"
 )
-SETTINGS_SOURCE = (REPOSITORY_ROOT / "Source/UnrealAI/Private/UnrealAISettings.cpp").read_text(encoding="utf-8")
-CLIENT_SOURCE = (REPOSITORY_ROOT / "Source/UnrealAI/Private/UnrealAIClient.cpp").read_text(encoding="utf-8")
-AUTOMATION_TEST_SOURCE = (
-    REPOSITORY_ROOT / "Source/UnrealAI/Private/Tests/UnrealAIAutomationTests.cpp"
-).read_text(encoding="utf-8")
+STREAMING_EXAMPLE_SOURCE_PATH = (
+    REPOSITORY_ROOT
+    / "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIStreamingExample.cpp"
+)
+STREAMING_REFERENCE_PATH = SKILLS_ROOT / "unrealai-cpp/references/streaming-client.md"
 
-SKILL_CONTRACTS = {
-    "unrealai-cpp": {
-        "reference": "references/cpp-api.md",
-        "symbols": {
-            "UUnrealAIClient",
-            "UUnrealAIProviders",
-            "ConfigureFromSettings",
-            "CreateChatCompletion",
-            "StreamChatCompletion",
-            "CancelRequest",
-            "CancelActiveCompletions",
-            "OpenAICompatibleFromProfile",
-            "UUnrealAIChatComponent",
-            "SendPrompt",
-            "SendMessages",
-            "SendPromptStream",
-            "SendMessagesStream",
-            "CancelActiveStream",
-            "FUnrealAIChatRequest",
-            "FUnrealAIChatResponse",
-            "FUnrealAIError",
-            "FUnrealAIRequestHandle",
-            "FUnrealAIRetryPolicy",
-            "FUnrealAIRequestRetryOptions",
-            "FUnrealAIRetryEvent",
-            "EUnrealAIRetryMode",
-            "EUnrealAIRetryReason",
-            "FUnrealAIChatStreamEvent",
-            "FUnrealAIChatStreamResult",
-            "EUnrealAIChatStreamEventType",
-            "EUnrealAIChatStreamStatus",
-            "GetFirstChoiceContent",
-            "MakeJsonObjectResponseFormat",
-            "MakeStrictJsonSchemaResponseFormat",
-        },
-        "claims": {
-            "UPROPERTY",
-            "ConfigureFromSettings",
-            "CreateChatCompletion",
-            "StreamChatCompletion",
-            "CancelRequest",
-            "GetFirstChoiceContent",
-            "bStream",
-            "TextDelta",
-            "ProviderEvent",
-            "RetryOptions",
-            "Retrying",
-            "Cancelled",
-            "Anthropic",
-            "Gemini",
-        },
-    },
-    "unrealai-blueprints": {
-        "reference": "references/blueprint-api.md",
-        "symbols": {
-            "CreateChatCompletion",
-            "UUnrealAIChatStreamAsyncAction",
-            "StreamChatCompletion",
-            "MakeChatMessage",
-            "MakeSimpleChatRequest",
-            "GetFirstChoiceContent",
-            "MakeJsonObjectResponseFormat",
-            "MakeStrictJsonSchemaResponseFormat",
-            "ResolveProviderConfig",
-            "ReloadProjectEnvFile",
-            "UUnrealAIChatComponent",
-            "SendPrompt",
-            "SendMessages",
-            "SendPromptStream",
-            "SendMessagesStream",
-            "CancelActiveCompletions",
-            "CancelActiveStream",
-            "OnChatCompleted",
-            "OnChatFailed",
-            "OnChatCancelled",
-            "OnChatRetrying",
-            "OnChatStreamEvent",
-            "OnChatStreamCompleted",
-            "OnChatStreamFailed",
-            "OnChatStreamCancelled",
-            "OnChatStreamRetrying",
-            "EUnrealAIProviderApi",
-        },
-        "claims": {
-            "Create Chat Completion (UnrealAI)",
-            "Stream Chat Completion (UnrealAI)",
-            "Make Simple Chat Request",
-            "Get First Choice Content",
-            "UnrealAIChatComponent",
-            "Completed",
-            "Failed",
-            "Cancelled",
-            "Async Action",
-            "Retrying",
-            "Retry Options",
-            "Text Delta",
-            "Provider Event",
-            "Has Content",
-            "Anthropic",
-            "Gemini",
-        },
-    },
+SKILL_PACKAGES = {
+    "unrealai-cpp": (
+        "references/client-setup.md",
+        "references/one-shot-client.md",
+        "references/streaming-client.md",
+        "references/chat-component.md",
+        "references/multi-turn-client.md",
+        "references/streaming-conversation.md",
+        "references/mixed-integration.md",
+        "references/packaged-client-deployment.md",
+        "references/dedicated-server-deployment.md",
+        "references/backend-deployment.md",
+    ),
+    "unrealai-blueprints": (
+        "references/async-actions.md",
+        "references/chat-component.md",
+        "references/requests-and-providers.md",
+        "references/asset-workflow.md",
+        "references/multi-turn-component.md",
+        "references/mixed-integration.md",
+        "references/backend-streaming-conversation.md",
+        "references/packaged-client-deployment.md",
+        "references/dedicated-server-deployment.md",
+        "references/backend-deployment.md",
+    ),
 }
 
 MARKDOWN_LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
@@ -150,6 +75,18 @@ def read_text(path: Path, errors: list[str]) -> str:
     except (OSError, UnicodeError) as exc:
         add_error(errors, f"Unable to read {path.relative_to(REPOSITORY_ROOT)}: {exc}")
         return ""
+
+
+def extract_marked_cpp_block(content: str, label: str, errors: list[str]) -> str:
+    begin = f"<!-- BEGIN {label} -->\n```cpp\n"
+    end = f"\n```\n<!-- END {label} -->"
+    if content.count(begin) != 1 or content.count(end) != 1:
+        add_error(errors, f"The C++ skill reference must contain one marked {label.lower()} block.")
+        return ""
+
+    block_start = content.index(begin) + len(begin)
+    block_end = content.index(end, block_start)
+    return content[block_start:block_end]
 
 
 def parse_frontmatter(skill_path: Path, content: str, errors: list[str]) -> dict[str, str]:
@@ -204,21 +141,33 @@ def validate_openai_yaml(skill_name: str, path: Path, errors: list[str]) -> None
         add_error(errors, f"{path.relative_to(REPOSITORY_ROOT)} default_prompt must mention ${skill_name}.")
 
 
-def validate_skill(skill_name: str, contract: dict[str, object], errors: list[str]) -> None:
+def validate_skill_package(skill_name: str, references: tuple[str, ...], errors: list[str]) -> None:
     skill_directory = SKILLS_ROOT / skill_name
     skill_path = skill_directory / "SKILL.md"
-    reference_path = skill_directory / str(contract["reference"])
+    reference_paths = [skill_directory / reference for reference in references]
     openai_yaml_path = skill_directory / "agents/openai.yaml"
+    expected_files = (skill_path, *reference_paths, openai_yaml_path)
 
-    expected_files = (skill_path, reference_path, openai_yaml_path)
     for path in expected_files:
         if not path.is_file():
             add_error(errors, f"Required skill file is missing: {path.relative_to(REPOSITORY_ROOT)}")
+
+    expected_reference_paths = set(references)
+    actual_reference_paths = {
+        path.relative_to(skill_directory).as_posix()
+        for path in (skill_directory / "references").glob("*.md")
+        if path.is_file()
+    }
+    for unexpected_reference in sorted(actual_reference_paths - expected_reference_paths):
+        add_error(
+            errors,
+            f"{skill_name} has an orphaned reference not routed by SKILL.md: {unexpected_reference}",
+        )
     if not all(path.is_file() for path in expected_files):
         return
 
     skill_content = read_text(skill_path, errors)
-    reference_content = read_text(reference_path, errors)
+    reference_content = "\n".join(read_text(path, errors) for path in reference_paths)
     combined_content = f"{skill_content}\n{reference_content}"
     frontmatter = parse_frontmatter(skill_path, skill_content, errors)
 
@@ -227,130 +176,142 @@ def validate_skill(skill_name: str, contract: dict[str, object], errors: list[st
     description = frontmatter.get("description", "")
     if len(description) < 40 or "TODO" in description:
         add_error(errors, f"{skill_path.relative_to(REPOSITORY_ROOT)} needs a specific description.")
-
     if "TODO" in combined_content or "[TODO" in combined_content:
         add_error(errors, f"{skill_name} contains an unfinished scaffold placeholder.")
 
-    expected_reference_link = f"]({contract['reference']})"
-    if expected_reference_link not in skill_content:
-        add_error(errors, f"{skill_name} does not route to {contract['reference']}.")
+    for reference in references:
+        if f"]({reference})" not in skill_content:
+            add_error(errors, f"{skill_name} does not route to {reference}.")
 
-    validate_links(skill_directory, [skill_path, reference_path], errors)
+    validate_links(skill_directory, [skill_path, *reference_paths], errors)
     validate_openai_yaml(skill_name, openai_yaml_path, errors)
-
-    for symbol in sorted(contract["symbols"]):
-        if symbol not in PUBLIC_SOURCE:
-            add_error(errors, f"{skill_name} expects public API symbol that is missing: {symbol}")
-
-    for claim in sorted(contract["claims"]):
-        if claim not in combined_content:
-            add_error(errors, f"{skill_name} is missing required API guidance: {claim}")
 
     for forbidden_text in FORBIDDEN_PORTABILITY_TEXT:
         if forbidden_text in combined_content:
             add_error(errors, f"{skill_name} contains platform-specific instruction: {forbidden_text}")
 
 
-def validate_shared_api_claims(errors: list[str]) -> None:
-    settings_contract = {
-        "OpenAI",
-        "https://api.openai.com/v1",
-        "gpt-5.6-luna",
-        "OPENAI_API_KEY",
-        "XAI",
-        "https://api.x.ai/v1",
-        "grok-4.6",
-        "XAI_API_KEY",
-        "XAI_BASE_URL",
-        "XAI_MODEL",
-        "Anthropic",
-        "https://api.anthropic.com/v1",
-        "claude-sonnet-5",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_MODEL",
-        "Gemini",
-        "https://generativelanguage.googleapis.com/v1beta",
-        "gemini-3.7-flash",
-        "GEMINI_API_KEY",
-        "GEMINI_BASE_URL",
-        "GEMINI_MODEL",
-    }
-    for source_value in settings_contract:
-        if f'TEXT("{source_value}")' not in SETTINGS_SOURCE:
-            add_error(errors, f"Provider setting used by the skills is missing from source: {source_value}")
+def require_contract_string(
+    contract: dict[str, object],
+    field: str,
+    errors: list[str],
+) -> str:
+    value = contract.get(field)
+    if not isinstance(value, str) or not value.strip():
+        add_error(errors, f"{CONTRACT_PATH.relative_to(REPOSITORY_ROOT)} field {field} must be a non-empty string.")
+        return ""
+    return value
 
-    stream_client_contract = {
-        "StreamChatCompletion",
-        "CancelRequest",
-        "SetResponseBodyReceiveStreamDelegateV2",
-        "EUnrealAIChatStreamStatus::Completed",
-        "EUnrealAIChatStreamStatus::Failed",
-        "EUnrealAIChatStreamStatus::Cancelled",
-        "TryScheduleRetry",
-    }
-    for source_value in stream_client_contract:
-        if source_value not in CLIENT_SOURCE:
-            add_error(errors, f"Streaming behavior used by the skills is missing from the client: {source_value}")
 
-    stream_public_contract = {
-        "DeprecatedProperty",
-        'DisplayName = "Stream Chat Completion (UnrealAI)"',
-        "FUnrealAIChatStreamEvent",
-        "FUnrealAIChatStreamResult",
-        "SendPromptStream",
-        "SendMessagesStream",
-        "CancelActiveStream",
-        "CancelActiveCompletions",
-        "FUnrealAIRetryEvent",
-        "FUnrealAIRequestRetryOptions",
-    }
-    for source_value in stream_public_contract:
-        if source_value not in PUBLIC_SOURCE:
-            add_error(errors, f"Streaming API used by the skills is missing from public headers: {source_value}")
+def require_contract_tests(
+    contract: dict[str, object],
+    field: str,
+    prefix: str,
+    errors: list[str],
+) -> list[str]:
+    value = contract.get(field)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        add_error(errors, f"{CONTRACT_PATH.relative_to(REPOSITORY_ROOT)} field {field} must be a non-empty string array.")
+        return []
 
-    if '"UnrealAI.Blueprint.Surface"' not in AUTOMATION_TEST_SOURCE:
-        add_error(errors, "The Blueprint skill requires the native Blueprint surface automation contract.")
+    tests = list(value)
+    if len(set(tests)) != len(tests):
+        add_error(errors, f"{CONTRACT_PATH.relative_to(REPOSITORY_ROOT)} field {field} contains duplicate tests.")
+    for test_name in tests:
+        if not test_name.startswith(prefix):
+            add_error(errors, f"Contract test {test_name} must use the {prefix} prefix.")
+    return tests
 
-    for test_id in (
-        "UnrealAI.Retry.Policy",
-        "UnrealAI.Retry.Coordinator",
-        "UnrealAI.Streaming.SseParser",
-        "UnrealAI.Streaming.ProviderAdapters",
+
+def validate_native_contract_wiring(errors: list[str]) -> None:
+    try:
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        add_error(errors, f"Unable to read {CONTRACT_PATH.relative_to(REPOSITORY_ROOT)}: {exc}")
+        return
+    if not isinstance(contract, dict):
+        add_error(errors, f"{CONTRACT_PATH.relative_to(REPOSITORY_ROOT)} must contain a JSON object.")
+        return
+    if contract.get("schemaVersion") != 1:
+        add_error(errors, f"{CONTRACT_PATH.relative_to(REPOSITORY_ROOT)} schemaVersion must be 1.")
+
+    project_value = require_contract_string(contract, "sampleProject", errors)
+    target = require_contract_string(contract, "editorTarget", errors)
+    automation_filter = require_contract_string(contract, "automationFilter", errors)
+    sample_tests = require_contract_tests(
+        contract,
+        "requiredSampleTests",
+        "UnrealAISample.SkillContracts.",
+        errors,
+    )
+    require_contract_tests(contract, "requiredPluginTests", "UnrealAI.", errors)
+
+    if project_value:
+        project_path = (REPOSITORY_ROOT / project_value).resolve()
+        try:
+            project_path.relative_to(REPOSITORY_ROOT)
+        except ValueError:
+            add_error(errors, "The skill-contract sample project must remain inside the repository.")
+        else:
+            if not project_path.is_file() or project_path.suffix != ".uproject":
+                add_error(errors, f"Skill-contract sample project is missing: {project_value}")
+
+    target_path = REPOSITORY_ROOT / "Samples/UnrealAISample/Source" / f"{target}.Target.cs"
+    if target and not target_path.is_file():
+        add_error(errors, f"Skill-contract editor target is missing: {target_path.relative_to(REPOSITORY_ROOT)}")
+    if automation_filter and any(not test.startswith(f"{automation_filter}.") for test in sample_tests):
+        add_error(errors, "Every required sample test must be selected by automationFilter.")
+
+    for relative_path in (
+        "Scripts/ci/run_skill_contracts.py",
+        "Scripts/ci/check_automation_report.py",
+        "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIMultiTurnExample.h",
+        "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIMultiTurnExample.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIPackagedClientFacadeExample.h",
+        "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIPackagedClientFacadeExample.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIPackagedChatWidgetExample.h",
+        "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIPackagedChatWidgetExample.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIProductionDeploymentExample.h",
+        "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIProductionDeploymentExample.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISample/Public/UnrealAIStreamingExample.h",
+        "Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIStreamingExample.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISampleEditor/Private/UnrealAISampleGenerateCommandlet.cpp",
+        "Samples/UnrealAISample/Source/UnrealAISampleEditor/Private/Tests/UnrealAISampleAutomationTests.cpp",
     ):
-        if f'"{test_id}"' not in AUTOMATION_TEST_SOURCE:
-            add_error(errors, f"The skills require the native streaming automation contract: {test_id}")
+        if not (REPOSITORY_ROOT / relative_path).is_file():
+            add_error(errors, f"Native skill-contract input is missing: {relative_path}")
 
-    if 'DisplayName = "Create Chat Completion (UnrealAI)"' not in PUBLIC_SOURCE:
-        add_error(errors, "The Blueprint skill's async-node display name no longer matches the public header.")
 
-    cpp_reference = read_text(SKILLS_ROOT / "unrealai-cpp/references/cpp-api.md", errors)
-    if cpp_reference:
-        ownership = cpp_reference.find("UPROPERTY()")
-        creation = cpp_reference.find("UnrealAIClient = UUnrealAIProviders::OpenAI(this, ConfigError);")
-        configuration_check = cpp_reference.find("if (!UnrealAIClient)", creation + 1)
-        request = cpp_reference.find("CreateChatCompletion", configuration_check + 1)
-        error_check = cpp_reference.find("if (Error.bIsError)")
-        response_read = cpp_reference.find("GetFirstChoiceContent", error_check + 1)
-        if min(ownership, creation, configuration_check, request, error_check, response_read) < 0:
-            add_error(errors, "The C++ reference is missing a required ownership or request-handling step.")
-        elif not (ownership < creation < configuration_check < request and error_check < response_read):
-            add_error(errors, "The C++ reference demonstrates an unsafe request or response order.")
+def validate_compiled_snippet_sync(errors: list[str]) -> None:
+    cpp_reference = read_text(STREAMING_REFERENCE_PATH, errors)
+    streaming_header = read_text(STREAMING_EXAMPLE_HEADER_PATH, errors)
+    documented_header = extract_marked_cpp_block(cpp_reference, "COMPILED STREAMING HEADER", errors)
+    if streaming_header and documented_header and streaming_header.strip() != documented_header.strip():
+        add_error(errors, "The documented streaming header differs from the native sample compiled by skill contracts.")
+
+    streaming_source = read_text(STREAMING_EXAMPLE_SOURCE_PATH, errors)
+    documented_source = extract_marked_cpp_block(cpp_reference, "COMPILED STREAMING SOURCE", errors)
+    if streaming_source and documented_source and streaming_source.strip() != documented_source.strip():
+        add_error(errors, "The documented streaming implementation differs from the native sample compiled by skill contracts.")
 
 
 def main() -> int:
     errors: list[str] = []
-    for skill_name, contract in SKILL_CONTRACTS.items():
-        validate_skill(skill_name, contract, errors)
-    validate_shared_api_claims(errors)
+    for skill_name, references in SKILL_PACKAGES.items():
+        validate_skill_package(skill_name, references, errors)
+    validate_native_contract_wiring(errors)
+    validate_compiled_snippet_sync(errors)
 
     if errors:
-        print("UnrealAI skill validation failed:", file=sys.stderr)
+        print("UnrealAI skill lint failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
 
-    print(f"UnrealAI skill validation passed for {len(SKILL_CONTRACTS)} skills.")
+    print(
+        f"UnrealAI portable skill lint passed for {len(SKILL_PACKAGES)} skills. "
+        "Run Scripts/ci/run_skill_contracts.py for compiled and behavioral validation."
+    )
     return 0
 
 
