@@ -1,6 +1,6 @@
 ---
 name: unrealai-blueprints
-description: Design, generate, deploy, compile, explain, review, or debug Blueprint and mixed C++/Blueprint integrations with UnrealAI, including production client/server/backend boundaries, multi-turn history, chat, streaming, retries, cancellation, provider setup, result handling, and Blueprint validation. Use when Blueprint participates in the feature.
+description: Design, generate, deploy, compile, explain, review, or debug Blueprint and mixed C++/Blueprint integrations with UnrealAI, including production client/server/backend boundaries, multi-turn history, chat, Responses, function tools, structured output, continuation, streaming, retries, cancellation, provider setup, result handling, and Blueprint validation. Use when Blueprint participates in the feature.
 ---
 
 # UnrealAI Blueprints
@@ -16,9 +16,13 @@ Treat the directory containing `UnrealAI.uplugin` as the plugin root. Confirm Bl
 - `Source/UnrealAI/Public/UnrealAIChatComponent.h`
 - `Source/UnrealAI/Public/UnrealAIBlueprintLibrary.h`
 - `Source/UnrealAI/Public/UnrealAITypes.h`
+- `Source/UnrealAI/Public/UnrealAIResponseTypes.h`
+- `Source/UnrealAI/Public/UnrealAIResponseLibrary.h`
+- `Source/UnrealAI/Public/UnrealAIResponseAsyncAction.h`
 
 Load references by integration type; do not read unrelated references:
 
+- [references/responses-actions.md](references/responses-actions.md): typed response async nodes, tools, structured output, continuation, and generated two-request graphs.
 - [references/async-actions.md](references/async-actions.md): one-shot and streaming async nodes, retry/cancellation pins, and response handling.
 - [references/chat-component.md](references/chat-component.md): repeated actor-owned requests, component events, history behavior, and concurrency limits.
 - [references/requests-and-providers.md](references/requests-and-providers.md): message/request construction, advanced fields, provider profiles, and local secrets.
@@ -32,6 +36,7 @@ Load references by integration type; do not read unrelated references:
 
 ## Choose the graph pattern
 
+- Use `Create Response (UnrealAI)` / `Stream Response (UnrealAI)` for typed tools, structured output, and continuation; follow `responses-actions.md` and handle its additional `Incomplete` terminal path.
 - Use `Create Chat Completion (UnrealAI)` for a one-shot asynchronous request in a Level, Actor, Widget, or other Blueprint with a valid world context. Retain its `Async Action` output when cancellation is needed.
 - Use `Stream Chat Completion (UnrealAI)` when the graph needs incremental text, cancellation, or a partial aggregate after interruption.
 - Use `UnrealAIChatComponent` for an actor that sends repeated independent one-shot or streaming prompts or owns system-prompt and sampling settings. The component does not retain conversation history.
@@ -45,7 +50,7 @@ Preserve an existing graph's architecture unless the user asks to change it.
 - Use `Get First Choice Content` and its `Has Content` output instead of assuming `Choices[0]` exists.
 - Leave `Model` empty to inherit the selected provider profile's default model.
 - Select `OpenAI`, `XAI`, `Anthropic`, or `Gemini` with the existing `Provider Name` pin/property; provider selection does not require provider-specific nodes.
-- Treat the response-format helper nodes as OpenAI-compatible features. Anthropic and Gemini currently normalize core text chat, not provider-independent tools, multimodal helpers, or structured output.
+- Treat legacy response-format helpers as OpenAI-compatible chat features. Use the new Responses nodes for typed tools and structured output across adapters; media helpers remain deferred.
 - Leave the deprecated request `Stream` field disabled. Select the dedicated one-shot or streaming node instead.
 - Treat `Provider Event` raw JSON as provider-specific and potentially sensitive. Do not display or log it by default.
 - Give conversation history and request state exactly one owner. Do not let both a native base class and its Blueprint subclass append the same user or assistant turn.

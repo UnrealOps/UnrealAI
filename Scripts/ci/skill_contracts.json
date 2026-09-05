@@ -5,6 +5,8 @@
   "automationFilter": "UnrealAISample.SkillContracts",
   "pluginAutomationFilter": "UnrealAI.",
   "requiredSampleTests": [
+    "UnrealAISample.SkillContracts.Responses.BlueprintAssets",
+    "UnrealAISample.SkillContracts.Responses.Loopback",
     "UnrealAISample.SkillContracts.Blueprint.BackendFacade",
     "UnrealAISample.SkillContracts.Blueprint.GeneratedAsset",
     "UnrealAISample.SkillContracts.Blueprint.GeneratedBackendWidget",
@@ -16,6 +18,10 @@
     "UnrealAISample.SkillContracts.Mixed.BlueprintSurface"
   ],
   "requiredPluginTests": [
+    "UnrealAI.Responses.Requests",
+    "UnrealAI.Responses.Continuation",
+    "UnrealAI.Responses.Streaming",
+    "UnrealAI.Responses.Safety",
     "UnrealAI.Blueprint.Helpers",
     "UnrealAI.Blueprint.Surface",
     "UnrealAI.ChatComponent.RequestConstruction",

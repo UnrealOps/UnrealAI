@@ -1,5 +1,15 @@
 # UnrealAI Sample Project
 
+## Typed Responses examples
+
+`AUnrealAIResponseExample` demonstrates native one-shot and streaming requests, an allowlisted read-only `get_level_name` tool, and provider-bound continuation capped at two model requests. Call `StartNativeResponses(false)` or `StartNativeResponses(true)` on a trusted standalone/server actor.
+
+The existing `UnrealAISampleGenerate` commandlet also generates and compiles `BP_UnrealAIResponses` and `BP_UnrealAIStreamResponses`. They override `StartBlueprintResponses` with two real response async nodes and use the native base for tool validation/history ownership. They do not start network requests in BeginPlay.
+
+Read the [Responses guide](../../Documentation/Responses.md) for protocol selection, every terminal/event path, safe tool execution, and local versus stored continuation. `Scripts/ci/run_skill_contracts.py` builds an isolated sample, regenerates these assets, and tests all four protocols through a credential-free loopback fixture; it does not alter the checkout's binary assets.
+
+## Existing chat examples
+
 This Unreal Engine 5.7 project is a real consumer of the repository's `UnrealAI` plugin. It includes:
 
 - `AUnrealAISampleActor`, a C++ example for one-shot completions, SSE streaming, retry notifications, cancellation, and safe response handling.

@@ -22,6 +22,14 @@ enum class EUnrealAIProviderApi : uint8
 };
 
 UENUM(BlueprintType)
+enum class EUnrealAIResponseApi : uint8
+{
+	ProviderDefault,
+	ChatProtocol,
+	OpenAIResponses
+};
+
+UENUM(BlueprintType)
 enum class EUnrealAIRetryMode : uint8
 {
 	UseProviderPolicy UMETA(DisplayName = "Use Provider Policy"),
@@ -80,6 +88,10 @@ struct UNREALAI_API FUnrealAIProviderConfig
 	/** Selects the provider wire protocol. Existing profiles default to OpenAI-compatible Chat Completions. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
 	EUnrealAIProviderApi Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
+
+	/** Protocol for CreateResponse/StreamResponse only. Chat methods retain Api. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
+	EUnrealAIResponseApi ResponseApi = EUnrealAIResponseApi::ProviderDefault;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Provider")
 	FString BaseUrl = TEXT("https://api.openai.com/v1");

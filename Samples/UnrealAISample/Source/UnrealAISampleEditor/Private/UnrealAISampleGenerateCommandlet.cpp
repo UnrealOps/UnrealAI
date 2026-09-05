@@ -1,4 +1,5 @@
 #include "UnrealAISampleGenerateCommandlet.h"
+#include "UnrealAIResponseExampleGenerator.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraph/EdGraph.h"
@@ -512,6 +513,11 @@ int32 UUnrealAISampleGenerateCommandlet::Main(const FString& Params)
 	}
 	if (!GenerateBackendWidget())
 	{
+		return 1;
+	}
+	if (!GenerateResponseExamples())
+	{
+		UE_LOG(LogUnrealAISampleGenerator, Error, TEXT("Responses example generation or compilation failed."));
 		return 1;
 	}
 

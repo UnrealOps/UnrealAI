@@ -248,17 +248,21 @@ def main() -> int:
         )
     )
     run(generator_command(editor, project, target_platform))
-    for report_name, automation_filter, required_tests in test_groups:
-        report_directory = output_directory / report_name
-        report_directory.mkdir(parents=True, exist_ok=True)
-        run(editor_command(
-            editor,
-            project,
-            report_directory,
-            automation_filter,
-            target_platform,
-        ))
-        run(report_check_command(report_directory, required_tests))
+    from response_fixture import response_fixture
+    with response_fixture() as fixture_port:
+        for report_name, automation_filter, required_tests in test_groups:
+            report_directory = output_directory / report_name
+            report_directory.mkdir(parents=True, exist_ok=True)
+            command = editor_command(
+                editor,
+                project,
+                report_directory,
+                automation_filter,
+                target_platform,
+            )
+            command.append(f"-UnrealAIResponseFixturePort={fixture_port}")
+            run(command)
+            run(report_check_command(report_directory, required_tests))
 
     print(f"Compiled skill examples and automation reports are available under {output_directory}")
     return 0

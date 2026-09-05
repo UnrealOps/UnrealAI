@@ -57,6 +57,8 @@ Prefer squash merges with a Conventional Commit-formatted pull request title. Re
 
 Do not configure API keys on this runner for compilation or unit tests; UnrealAI's current tests are intentionally offline.
 
+The skill phase starts `Scripts/ci/response_fixture.py` on an ephemeral `127.0.0.1` port and passes only that port to the editor. The fixture rejects credential-bearing requests and validates provider-history replay. `UnrealAISample.SkillContracts.Responses.Loopback` exercises real native/Blueprint one-shot and streaming requests across all four protocols, tool continuation, retry success, no replay after a lifecycle frame, and cancellation. Both generated response Blueprints are compiled, saved, and reloaded before behavioral execution. No external provider traffic or API-key configuration is needed.
+
 For a public repository, keep the engine workflow manual and restrict who can dispatch it. Prefer isolated or ephemeral runners, especially when expanding to pull-request execution. Add engine-version labels or runner groups when the project begins supporting multiple Unreal Engine releases.
 
 ## Local commands
@@ -83,7 +85,7 @@ To compile and test only the examples and recipes consumed by the skills:
 UNREAL_ENGINE_ROOT=/path/to/UnrealEngine python3 Scripts/ci/run_skill_contracts.py --platform Mac
 ```
 
-The skill runner never regenerates assets in the checkout. It stages a clean sample copy under its output directory, omits generated build/cache folders, points that temporary project back to the current plugin, builds it, executes `UnrealAISampleGenerate`, and only then reloads both generated Blueprint assets. It exports and independently report-checks `SampleAutomationReport` for every required sample contract and `PluginAutomationReport` for every required core plugin contract.
+The skill runner never regenerates assets in the checkout. It stages a clean sample copy and a copy of the current plugin under its output directory, omits generated build/cache folders, builds it, executes `UnrealAISampleGenerate`, and only then reloads the generated Blueprint assets. It exports and independently report-checks `SampleAutomationReport` for every required sample contract and `PluginAutomationReport` for every required core plugin contract.
 
 Use `--platform Win64` on Windows or `--platform Linux` on Linux. The driver selects the correct `RunUAT` launcher and `UnrealEditor-Cmd` executable for the host operating system.
 

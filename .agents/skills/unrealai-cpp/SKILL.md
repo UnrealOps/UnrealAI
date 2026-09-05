@@ -1,6 +1,6 @@
 ---
 name: unrealai-cpp
-description: Implement, review, deploy, or debug native C++ and mixed C++/Blueprint integrations with the UnrealAI Unreal Engine plugin, including production client, dedicated-server, and backend boundaries, multi-turn state, provider configuration, chat, streaming, retries, cancellation, and module dependencies. Use for C++-owned work; use unrealai-blueprints for Blueprint-only flows.
+description: Implement, review, deploy, or debug native C++ and mixed C++/Blueprint integrations with the UnrealAI Unreal Engine plugin, including production client, dedicated-server, and backend boundaries, multi-turn state, provider configuration, chat, Responses, function tools, structured output, continuation, streaming, retries, cancellation, and module dependencies. Use for C++-owned work; use unrealai-blueprints for Blueprint-only flows.
 ---
 
 # UnrealAI C++ SDK
@@ -18,9 +18,12 @@ Treat the directory containing `UnrealAI.uplugin` as the plugin root. Inspect on
 - `Source/UnrealAI/Public/UnrealAIChatStreamAsyncAction.h`
 - `Source/UnrealAI/Public/UnrealAIBlueprintLibrary.h`
 - `Source/UnrealAI/Public/UnrealAITypes.h`
+- `Source/UnrealAI/Public/UnrealAIResponseTypes.h`
+- `Source/UnrealAI/Public/UnrealAIResponseLibrary.h`
 
 Load references by integration type; do not read unrelated references:
 
+- [references/responses-client.md](references/responses-client.md): typed Responses, tools, structured output, provider-bound continuation, and the complete compiled native example.
 - [references/client-setup.md](references/client-setup.md): module dependency, provider factories, dynamic/custom profiles, request fields, and shared response/error rules.
 - [references/one-shot-client.md](references/one-shot-client.md): direct `UUnrealAIClient::CreateChatCompletion` ownership, cancellation, retry, and complete example.
 - [references/streaming-client.md](references/streaming-client.md): direct `StreamChatCompletion`, event/terminal contracts, and the complete compile-tested actor.
@@ -34,6 +37,7 @@ Load references by integration type; do not read unrelated references:
 
 ## Choose the integration
 
+- Use `CreateResponse` / `StreamResponse` for typed tools, structured output, and provider-bound continuation; follow `responses-client.md` for the complete compiled example.
 - Prefer `UUnrealAIProviders::OpenAI`, `XAI`, `Anthropic`, or `Gemini` to create a configured `UUnrealAIClient` for a built-in provider.
 - Use `UUnrealAIClient::ConfigureFromSettings` when the provider name is selected dynamically, and `OpenAICompatible` or `OpenAICompatibleFromProfile` for custom compatible gateways.
 - Use `CreateChatCompletion` for a single final response. Use `StreamChatCompletion` for incremental text and a final or partial aggregate. Both return an `FUnrealAIRequestHandle`; retain it when cancellation is needed.
@@ -48,9 +52,9 @@ Preserve the integration style already used by the consumer unless the user asks
 
 - Add `UnrealAI` to the consuming module's `PrivateDependencyModuleNames`, or to `PublicDependencyModuleNames` when UnrealAI types appear in public headers.
 - Give every `UUnrealAIClient` an appropriate `UObject` outer and retain it in a `UPROPERTY` for the entire asynchronous request. A temporary unreferenced client can be garbage-collected.
-- Create the client through `UUnrealAIProviders`, or call `Configure`/`ConfigureFromSettings`, before `CreateChatCompletion`.
+- Create the client through `UUnrealAIProviders`, or call `Configure`/`ConfigureFromSettings`, before submitting any request.
 - Keep common request code provider-neutral. Provider-native JSON passed through `ContentJson`, `AdditionalFieldsJson`, or `AdditionalParametersJson` must match the selected adapter.
-- Treat choice count and `ResponseFormatJson` as OpenAI-compatible features. Anthropic and Gemini currently normalize core text chat only; do not imply normalized tools, multimodal helpers, or native structured-output helpers.
+- Treat legacy choice count and `ResponseFormatJson` as OpenAI-compatible chat features. Use `CreateResponse` / `StreamResponse` for normalized tools and structured output across adapters; media helpers remain deferred.
 - Handle `FUnrealAIError` before reading the response, and tolerate a successful response with no choices.
 - Leave `Request.Model` empty when the configured provider's default model is intended.
 - Do not set `bStream`; it is deprecated. Choose `CreateChatCompletion` or `StreamChatCompletion` explicitly.

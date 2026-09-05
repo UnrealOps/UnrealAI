@@ -166,7 +166,7 @@ The common text surface maps as follows:
 
 `Request.Model` overrides the configured default for one request. `Request.bStream` is deprecated; `CreateChatCompletion` is always one-shot and `StreamChatCompletion` is always streaming. If legacy code sets `bStream`, the one-shot API fails before starting HTTP and directs the caller to the dedicated streaming API.
 
-`ContentJson`, `AdditionalFieldsJson`, and `AdditionalParametersJson` remain escape hatches, but their JSON must match the selected provider's native schema. Anthropic system `ContentJson` represents system content blocks; Gemini content JSON represents one Part object or an array of Part objects. Normalized provider-independent tool calls and multimodal helpers are not available yet.
+`ContentJson`, `AdditionalFieldsJson`, and `AdditionalParametersJson` remain escape hatches, but their JSON must match the selected provider's native schema. Anthropic system `ContentJson` represents system content blocks; Gemini content JSON represents one Part object or an array of Part objects. For typed provider-neutral tools, structured output, and continuation, use the additive [Responses APIs](Responses.md). Multimodal helpers remain deferred.
 
 ## Streaming contract
 
