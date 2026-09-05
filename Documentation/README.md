@@ -11,6 +11,10 @@ UnrealAI is a provider-neutral Unreal Engine runtime SDK. One chat contract supp
 
 OpenAI and XAI share the OpenAI-compatible adapter. Anthropic and Gemini use their native request, authentication, error, response, and usage formats. The adapters normalize ordinary text conversations into `FUnrealAIChatResponse` while preserving the provider response in `RawJson`.
 
+For a complete consuming project, open the [UnrealAI sample](../Samples/UnrealAISample/README.md). It includes buildable C++, a compiled Blueprint graph, a starter level, offline asset checks, and opt-in live provider tests.
+
+Before planning a shipped integration, review the [production-readiness gaps and remediation plan](ProductionReadiness.md). It distinguishes current launch blockers from longer-term SDK maturity work and defines acceptance criteria for closing each gap.
+
 ## Install in another project
 
 Copy `Plugins/UnrealAI` into the target project's `Plugins` folder, then enable it in the target `.uproject`:
@@ -211,4 +215,4 @@ Portable validators and native Automation tests are offline and credential-free.
 <python3> Scripts/ci/validate_release.py
 ```
 
-With Unreal Engine installed and `UNREAL_ENGINE_ROOT` configured for the host, run `Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>`. A native run validates only its matching host platform.
+With Unreal Engine installed and `UNREAL_ENGINE_ROOT` configured for the host, run `Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>`. The driver packages the plugin, runs plugin behavior tests, stages an isolated skill sample, builds it, executes its Blueprint generator, reloads the generated actor and Widget Blueprints, and runs the required recipe contracts. Use `Scripts/ci/run_skill_contracts.py --platform <Mac|Win64|Linux>` for the isolated skill validation; it independently requires both sample and core plugin contract reports. A native run validates only its matching host platform.

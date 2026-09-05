@@ -3,17 +3,29 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: check_automation_report.py <index.json>", file=sys.stderr)
-        return 2
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("report", type=Path)
+    parser.add_argument(
+        "--require",
+        action="append",
+        default=[],
+        metavar="FULL_TEST_PATH",
+        help="Require this exact Unreal automation test to appear and succeed.",
+    )
+    return parser.parse_args()
 
-    report_path = Path(sys.argv[1])
+
+def main() -> int:
+    arguments = parse_arguments()
+
+    report_path = arguments.report
     try:
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -39,9 +51,35 @@ def main() -> int:
             print(f"  - {test.get('fullTestPath', test.get('testDisplayName', 'Unknown test'))}", file=sys.stderr)
         return 1
 
+    tests_by_path = {
+        test.get("fullTestPath"): test
+        for test in tests
+        if isinstance(test.get("fullTestPath"), str)
+    }
+    missing_tests = sorted(set(arguments.require) - set(tests_by_path))
+    unsuccessful_tests = sorted(
+        test_name
+        for test_name in arguments.require
+        if test_name in tests_by_path and tests_by_path[test_name].get("state") != "Success"
+    )
+    if missing_tests or unsuccessful_tests:
+        print("Unreal automation report does not satisfy its required contract:", file=sys.stderr)
+        for test_name in missing_tests:
+            print(f"  - missing: {test_name}", file=sys.stderr)
+        for test_name in unsuccessful_tests:
+            print(
+                f"  - not successful: {test_name} ({tests_by_path[test_name].get('state', 'Unknown')})",
+                file=sys.stderr,
+            )
+        return 1
+
     succeeded = int(report.get("succeeded", 0))
     warnings = int(report.get("succeededWithWarnings", 0))
-    print(f"Unreal automation passed: {succeeded} succeeded, {warnings} with warnings, {len(tests)} total.")
+    required = len(set(arguments.require))
+    print(
+        f"Unreal automation passed: {succeeded} succeeded, {warnings} with warnings, "
+        f"{len(tests)} total, {required} required contract tests present."
+    )
     return 0
 
 

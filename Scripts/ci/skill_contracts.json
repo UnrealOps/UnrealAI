@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "sampleProject": "Samples/UnrealAISample/UnrealAISample.uproject",
+  "editorTarget": "UnrealAISampleEditor",
+  "automationFilter": "UnrealAISample.SkillContracts",
+  "pluginAutomationFilter": "UnrealAI.",
+  "requiredSampleTests": [
+    "UnrealAISample.SkillContracts.Blueprint.BackendFacade",
+    "UnrealAISample.SkillContracts.Blueprint.GeneratedAsset",
+    "UnrealAISample.SkillContracts.Blueprint.GeneratedBackendWidget",
+    "UnrealAISample.SkillContracts.Blueprint.PackagedWidgetBehavior",
+    "UnrealAISample.SkillContracts.Cpp.MultiTurnBehavior",
+    "UnrealAISample.SkillContracts.Cpp.StreamingConversationBehavior",
+    "UnrealAISample.SkillContracts.Cpp.StreamingBehavior",
+    "UnrealAISample.SkillContracts.Deployment.Configuration",
+    "UnrealAISample.SkillContracts.Mixed.BlueprintSurface"
+  ],
+  "requiredPluginTests": [
+    "UnrealAI.Blueprint.Helpers",
+    "UnrealAI.Blueprint.Surface",
+    "UnrealAI.ChatComponent.RequestConstruction",
+    "UnrealAI.Providers.Factories",
+    "UnrealAI.Providers.ProtocolAdapters",
+    "UnrealAI.Response.FirstChoice",
+    "UnrealAI.Retry.Coordinator",
+    "UnrealAI.Retry.Policy",
+    "UnrealAI.Settings.DefaultProviders",
+    "UnrealAI.Streaming.ChunkQueue",
+    "UnrealAI.Streaming.ProviderAdapters",
+    "UnrealAI.Streaming.SseParser"
+  ]
+}

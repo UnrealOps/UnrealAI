@@ -5,7 +5,7 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 ## Project Baseline
 
 - `UnrealAI.uplugin` is the plugin descriptor and version source of truth.
-- The initial release is `0.1.0`; release tags use the `v0.1.0` form.
+- `UnrealAI.uplugin` contains the current release version. Release automation began at `0.1.0`, and tags use the `v<VersionName>` form.
 - Unreal Engine 5.7 is the currently validated engine release.
 - `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
 - Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff for transient failures. Do not describe normalized tool calls, reasoning events, multimodal helpers, or other roadmap features as implemented.
@@ -22,6 +22,7 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 | `Documentation/` | Detailed usage and CI documentation |
 | `.agents/skills/` | Source-grounded C++ and Blueprint instructions for coding agents |
 | `Scripts/ci/` | Portable validation, native packaging, and automation-report checks |
+| `Samples/UnrealAISample/` | Buildable C++ and Blueprint consumer, generated example assets, and opt-in live tests |
 | `Tests/HostProject/` | Minimal project used to load and test the packaged plugin |
 | `.github/workflows/` | Hosted source checks, release automation, and native self-hosted runner matrix |
 | `release-please-config.json` | Conventional Commit release, changelog, and tag policy |
@@ -104,16 +105,17 @@ Run native packaging and automation on a host with Unreal Engine installed and `
 
 ```text
 <python> Scripts/ci/run_unreal_ci.py --platform <Mac|Win64|Linux>
+<python> Scripts/ci/run_skill_contracts.py --platform <Mac|Win64|Linux>
 ```
 
 Validation expectations:
 
 - Documentation-only changes: portable plugin validation and link/path review.
-- Skill changes: both portable validators and the upstream skill schema validator when available.
+- Skill changes: portable lint, the upstream skill schema validator when available, and the native compiled/behavioral skill contracts on an Unreal-equipped host.
 - Runtime or public API changes: strict native plugin packaging plus all `UnrealAI.*` automation tests, including the offline SSE parser and provider-stream fixture contracts.
 - Workflow changes: portable validators and `actionlint`.
 - Release automation changes: all three portable validators, synchronizer contract tests, and a Release Please dry run when available.
-- Provider defaults or Blueprint exposure changes: add or update a native source-of-truth assertion.
+- Provider defaults, Blueprint exposure, or recipe semantics: add or update a native behavioral contract and list it in `Scripts/ci/skill_contracts.json`.
 
 Automation test IDs use `UnrealAI.<Area>.<Behavior>`. Add focused regression coverage for behavior changes. Reflection tests should protect documented Blueprint node names, callability, purity, and assignable delegates when those surfaces matter.
 
@@ -122,7 +124,7 @@ Automation test IDs use `UnrealAI.<Area>.<Behavior>`. Add focused regression cov
 - Update `README.md` for public installation, quickstart, capability, or compatibility changes.
 - Update `Documentation/README.md` for detailed API and provider guidance and `Documentation/ContinuousIntegration.md` for validation changes.
 - Keep `.env.example`, provider tables, code samples, and source defaults synchronized.
-- Update both agent skills when a public C++ or Blueprint contract changes. `Scripts/ci/validate_skills.py` should pin important documented symbols and defaults to source.
+- Update both agent skills when a public C++ or Blueprint contract changes. Route integration-specific guidance through focused references and load only those relevant to the task; do not recreate monolithic API references or duplicate provider defaults. Portable skill validation checks packaging, links, portability, orphaned references, and compiled-snippet synchronization; native automation owns API, reflection, and behavioral assertions.
 - Label generated Blueprint diagrams as illustrations. Do not call them literal editor screenshots.
 - Code samples must retain asynchronous UObjects correctly, handle failures first, and avoid real credentials.
 
@@ -155,10 +157,10 @@ Keep commits focused and independently understandable. Prefer squash-merging pul
 
 `UnrealAI.uplugin` contains both runtime release fields:
 
-- `VersionName` is the SemVer value without the tag prefix, initially `0.1.0`.
-- `Version` is a positive, monotonically increasing Unreal integer, initially `1`.
+- `VersionName` is the current SemVer value without the tag prefix.
+- `Version` is a positive, monotonically increasing Unreal integer.
 
-Release tags use `v<VersionName>`, for example `v0.1.0`. Do not add the `v` prefix inside `UnrealAI.uplugin`.
+Release tags use `v<VersionName>`. Do not add the `v` prefix inside `UnrealAI.uplugin`.
 
 Release Please owns normal version selection and changelog generation:
 

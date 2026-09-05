@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Category": "Samples",
+	"Description": "C++ and Blueprint integration examples for the UnrealAI plugin.",
+	"AdditionalPluginDirectories": [
+		"../../.."
+	],
+	"Modules": [
+		{
+			"Name": "UnrealAISample",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "UnrealAISampleEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "UnrealAI",
+			"Enabled": true
+		},
+		{
+			"Name": "AndroidFileServer",
+			"Enabled": false
+		}
+	]
+}

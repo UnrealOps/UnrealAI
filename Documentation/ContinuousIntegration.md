@@ -11,6 +11,7 @@ UnrealAI uses two CI tiers so that inexpensive checks run on every change while 
 - validates `UnrealAI.uplugin`, its declared module layout, a positive integer `Version`, and a SemVer-compliant `VersionName`;
 - rejects committed Unreal-generated output, local `.env` files, common credential formats, personal filesystem paths, stale pre-rename identifiers, conflict markers, and trailing whitespace;
 - checks that `.env.example` has no populated secret values;
+- lints skill packaging, local links, portability, the native contract manifest, and exact synchronization of embedded compile-tested snippets;
 - lints GitHub Actions workflows with `actionlint`;
 - lints CI shell scripts with ShellCheck.
 
@@ -24,8 +25,9 @@ The workflow has read-only repository permissions, disables persisted checkout c
 2. packages the plugin for `Mac`, `Win64`, or `Linux` with `BuildPlugin -Rocket -StrictIncludes`;
 3. installs the packaged result into a temporary host project;
 4. runs the `UnrealAI.*` native automation tests headlessly with `UnrealEditor-Cmd` and `-NullRHI`;
-5. parses the exported `index.json` report to make failures and incomplete tests fail the job;
-6. uploads the packaged plugin and test report for seven days.
+5. requires every plugin contract named in `Scripts/ci/skill_contracts.json` to appear and succeed in the exported report;
+6. copies the sample project into isolated CI output, builds `UnrealAISampleEditor`, runs its Blueprint generator, then executes every required `UnrealAISample.SkillContracts.*` compiled, Blueprint, mixed, and deployment behavior contract against the newly generated actor Blueprint and packaged-chat Widget Blueprint; the standalone skill runner also requires the core `UnrealAI.*` group so its result remains authoritative when invoked outside the full driver;
+7. uploads the packaged plugin and all automation reports for seven days.
 
 This workflow is manual because standard GitHub-hosted runners do not include the licensed, very large Unreal Engine toolchain, and GitHub warns against automatically running public pull-request code on persistent self-hosted runners.
 
@@ -75,9 +77,19 @@ Native package and automation test:
 UNREAL_ENGINE_ROOT=/path/to/UnrealEngine python3 Scripts/ci/run_unreal_ci.py --platform Mac
 ```
 
+To compile and test only the examples and recipes consumed by the skills:
+
+```bash
+UNREAL_ENGINE_ROOT=/path/to/UnrealEngine python3 Scripts/ci/run_skill_contracts.py --platform Mac
+```
+
+The skill runner never regenerates assets in the checkout. It stages a clean sample copy under its output directory, omits generated build/cache folders, points that temporary project back to the current plugin, builds it, executes `UnrealAISampleGenerate`, and only then reloads both generated Blueprint assets. It exports and independently report-checks `SampleAutomationReport` for every required sample contract and `PluginAutomationReport` for every required core plugin contract.
+
 Use `--platform Win64` on Windows or `--platform Linux` on Linux. The driver selects the correct `RunUAT` launcher and `UnrealEditor-Cmd` executable for the host operating system.
 
 Set `UNREAL_CI_OUTPUT_DIR` to an empty directory when the package and report should be retained at a known location.
+
+`validate_skills.py` is intentionally a fast portable lint, not proof that an API or recipe works. The authoritative skill contract is the native build plus required automation report. `check_automation_report.py --require <full-test-path>` also prevents a renamed, unregistered, or incorrectly filtered test from producing a false-green run.
 
 ## Why these checks
 
