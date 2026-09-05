@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/UnrealOps/UnrealAI/compare/v0.4.0...v0.5.0) (2026-09-05)
+
+
+### Features
+
+* add validated integration sample and skills ([5d6918f](https://github.com/UnrealOps/UnrealAI/commit/5d6918f1511f3ae41396fda9b0aa11fbadab1cea))
+
 ## [0.4.0](https://github.com/UnrealOps/UnrealAI/compare/v0.3.0...v0.4.0) (2026-09-04)
 
 
