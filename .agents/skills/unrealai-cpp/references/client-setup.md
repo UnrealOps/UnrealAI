@@ -44,7 +44,7 @@ Call `Configure(ProviderConfig)` only when the application owns the complete cus
 
 `FUnrealAIChatMessage` provides role, text content, `Name`, and `ToolCallId`. `ContentJson` replaces string content with a provider-native JSON value; `AdditionalFieldsJson` merges provider-native message fields. These JSON escape hatches and `AdditionalParametersJson` must match the selected adapter.
 
-Use `UUnrealAIBlueprintLibrary::MakeJsonObjectResponseFormat` or `MakeStrictJsonSchemaResponseFormat` rather than hand-building compatible `response_format` JSON. Anthropic and Gemini normalize core text chat but do not currently normalize choice counts, tools, multimodal helpers, or these structured-output helpers.
+Use `UUnrealAIBlueprintLibrary::MakeJsonObjectResponseFormat` or `MakeStrictJsonSchemaResponseFormat` rather than hand-building compatible `response_format` JSON. This legacy chat surface does not normalize choice counts or tools across Anthropic/Gemini. For typed tools and structured output, use [responses-client.md](responses-client.md); media helpers remain deferred.
 
 ## Shared response and error rules
 

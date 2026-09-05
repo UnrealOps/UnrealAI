@@ -8,7 +8,7 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 - `UnrealAI.uplugin` contains the current release version. Release automation began at `0.1.0`, and tags use the `v<VersionName>` form.
 - Unreal Engine 5.7 is the currently validated engine release.
 - `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
-- Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff for transient failures. Do not describe normalized tool calls, reasoning events, multimodal helpers, or other roadmap features as implemented.
+- Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff. The additive Responses API supports typed text/refusal/tool items, structured-output requests, and provider-bound continuation across OpenAI Responses, compatible Chat Completions, Anthropic Messages, and Gemini generateContent. Reasoning/signatures remain opaque provider data. Do not claim media helpers, hosted tools, Gemini Interactions, or an agent executor are implemented.
 - The built-in provider defaults are defined in `Source/UnrealAI/Private/UnrealAISettings.cpp`. Avoid duplicating those values unless a user-facing example requires them, and update every documented and validated copy when they change.
 
 ## Repository Map
@@ -53,6 +53,7 @@ When working in a consuming Unreal project, use `.agents/skills/unrealai-cpp` fo
 - A `UUnrealAIClient` must have a suitable `UObject` outer and be retained by a `UPROPERTY` while an HTTP request is active.
 - Configure a client before starting a request. Handle `FUnrealAIError` before reading response content and tolerate successful responses with no choices.
 - Use `CreateChatCompletion` for one-shot work and `StreamChatCompletion` for SSE. `FUnrealAIChatRequest::bStream` is deprecated and must not be used to select the transport.
+- Use `CreateResponse` / `StreamResponse` for typed tool/output workflows. Keep their protocol selection separate from legacy chat. Only completed results can feed tool execution/continuation, which remain application-owned. Preserve signed/encrypted provider history and its binding; never replay it across models or endpoints.
 - Treat a request handle as the identity of the full logical operation across HTTP attempts. Cancellation, exactly-once completion, and delegate cleanup must also work while a request is waiting in backoff.
 - Keep retry decisions provider-neutral and bounded. Retry only classified transient failures, honor `Retry-After` within the configured ceiling, exclude known permanent quota/billing errors, and preserve the provider policy plus per-request override contract.
 - Retry an SSE request only before the first complete SSE data event. Never replay a partially delivered stream because doing so can duplicate text or provider events.

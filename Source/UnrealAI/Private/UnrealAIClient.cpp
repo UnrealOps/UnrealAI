@@ -8,6 +8,8 @@
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/ScopeLock.h"
 #include "UnrealAIProviderAdapter.h"
+#include "UnrealAIResponseAdapter.h"
+#include "UnrealAIResponseJson.h"
 #include "UnrealAIRetryPolicy.h"
 #include "UnrealAISettings.h"
 #include "UnrealAIStreamChunkQueue.h"
@@ -111,6 +113,9 @@ struct FUnrealAIRequestState
 	FUnrealAIChatStreamEventNativeDelegate EventDelegate;
 	FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate;
 	FUnrealAIRetryNativeDelegate RetryDelegate;
+	TUniquePtr<FUnrealAIResponseState> ResponseState;
+	FUnrealAIResponseNativeDelegate ResponseDelegate;
+	FUnrealAIResponseEventNativeDelegate ResponseEventDelegate;
 #if WITH_DEV_AUTOMATION_TESTS
 	TFunction<void()> StartAttemptForTesting;
 #endif
@@ -156,6 +161,12 @@ namespace UnrealAIClientPrivate
 		State->ProviderState = FUnrealAIProviderStreamState();
 		State->ProviderState.Response.Model = State->RequestData.ResolvedModel;
 		State->ProviderState.ExpectedChoiceCount = State->ExpectedChoiceCount;
+		if (State->ResponseState)
+		{
+			FUnrealAIResponseContext Context = MoveTemp(State->ResponseState->Context);
+			*State->ResponseState = FUnrealAIResponseState();
+			State->ResponseState->Context = MoveTemp(Context);
+		}
 	}
 
 	void ConfigureHttpRequest(
@@ -219,6 +230,86 @@ bool UUnrealAIClient::IsConfigured() const
 const FUnrealAIProviderConfig& UUnrealAIClient::GetProviderConfig() const
 {
 	return ProviderConfig;
+}
+
+FUnrealAIResponseCapabilities UUnrealAIClient::GetResponseCapabilities() const
+{
+	return UnrealAIResponseAdapters::Capabilities(ProviderConfig);
+}
+
+bool UUnrealAIClient::ValidateResponseRequest(const FUnrealAIResponseRequest& Request, FUnrealAIError& OutError) const
+{
+	if (!bConfigured)
+	{
+		OutError = UnrealAIProviderAdapters::MakeError(TEXT("Client is not configured."));
+		return false;
+	}
+	FUnrealAIHttpRequestData Http;
+	FUnrealAIResponseContext Context;
+	return UnrealAIResponseAdapters::BuildRequest(ProviderConfig, Request, FString(),
+		EUnrealAIRequestMode::OneShot, Http, Context, OutError);
+}
+
+FUnrealAIRequestHandle UUnrealAIClient::CreateResponse(const FUnrealAIResponseRequest& Request,
+	FUnrealAIResponseNativeDelegate CompletionDelegate, FUnrealAIRetryNativeDelegate RetryDelegate)
+{
+	return StartResponse(Request, false, FUnrealAIResponseEventNativeDelegate(), MoveTemp(CompletionDelegate), MoveTemp(RetryDelegate));
+}
+
+FUnrealAIRequestHandle UUnrealAIClient::StreamResponse(const FUnrealAIResponseRequest& Request,
+	FUnrealAIResponseEventNativeDelegate EventDelegate, FUnrealAIResponseNativeDelegate TerminalDelegate,
+	FUnrealAIRetryNativeDelegate RetryDelegate)
+{
+	return StartResponse(Request, true, MoveTemp(EventDelegate), MoveTemp(TerminalDelegate), MoveTemp(RetryDelegate));
+}
+
+FUnrealAIRequestHandle UUnrealAIClient::StartResponse(const FUnrealAIResponseRequest& Request, bool bStream,
+	FUnrealAIResponseEventNativeDelegate EventDelegate, FUnrealAIResponseNativeDelegate TerminalDelegate,
+	FUnrealAIRetryNativeDelegate RetryDelegate)
+{
+	check(IsInGameThread());
+	FUnrealAIResponseResult Failure;
+	const FString ApiKey = ResolveApiKey();
+	FUnrealAIHttpRequestData Http;
+	FUnrealAIResponseContext Context;
+	if (!bConfigured)
+	{
+		Failure.Error = UnrealAIProviderAdapters::MakeError(TEXT("Client is not configured."));
+	}
+	else if (ProviderConfig.bRequiresApiKey && ApiKey.IsEmpty())
+	{
+		Failure.Error = UnrealAIProviderAdapters::MakeError(TEXT("The provider API key is not configured."));
+	}
+	else
+	{
+		UnrealAIResponseAdapters::BuildRequest(ProviderConfig, Request, ApiKey,
+			bStream ? EUnrealAIRequestMode::Stream : EUnrealAIRequestMode::OneShot, Http, Context, Failure.Error);
+	}
+	if (Failure.Error.bIsError)
+	{
+		TerminalDelegate.ExecuteIfBound(Failure);
+		return FUnrealAIRequestHandle();
+	}
+	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> State = MakeShared<FUnrealAIRequestState, ESPMode::ThreadSafe>();
+	State->RequestId = FGuid::NewGuid();
+	State->Mode = bStream ? UnrealAIClientPrivate::ERequestMode::Stream : UnrealAIClientPrivate::ERequestMode::OneShot;
+	State->RequestData = MoveTemp(Http);
+	State->ProviderApi = ProviderConfig.Api;
+	State->TimeoutSeconds = ProviderConfig.TimeoutSeconds;
+	State->RetryPolicy = UnrealAIRetryPolicy::Resolve(ProviderConfig.RetryPolicy, Request.RetryOptions);
+	State->RetryDelegate = MoveTemp(RetryDelegate);
+	State->ResponseDelegate = MoveTemp(TerminalDelegate);
+	State->ResponseEventDelegate = MoveTemp(EventDelegate);
+	State->ResponseState = MakeUnique<FUnrealAIResponseState>();
+	State->ResponseState->Context = MoveTemp(Context);
+	ActiveRequests.Add(State->RequestId, State);
+	StartRequestAttempt(State);
+	FUnrealAIRequestHandle Handle;
+	if (ActiveRequests.Contains(State->RequestId))
+	{
+		Handle.Id = State->RequestId;
+	}
+	return Handle;
 }
 
 FUnrealAIRequestHandle UUnrealAIClient::CreateChatCompletion(
@@ -640,13 +731,17 @@ void UUnrealAIClient::HandleChatCompletionResponse(
 		return;
 	}
 
-	const IUnrealAIProviderAdapter& Adapter = UnrealAIProviderAdapters::Get(State->ProviderApi);
-	Adapter.ParseResponse(
-		State->RequestData.ResolvedModel,
-		HttpResponse->GetResponseCode(),
-		HttpResponse->GetContentAsString(),
-		ParsedResponse,
-		Error);
+	if (State->ResponseState)
+	{
+		UnrealAIResponseAdapters::ParseResponse(HttpResponse->GetResponseCode(), HttpResponse->GetContentAsString(), *State->ResponseState);
+		Error = State->ResponseState->Result.Error;
+	}
+	else
+	{
+		UnrealAIProviderAdapters::Get(State->ProviderApi).ParseResponse(
+			State->RequestData.ResolvedModel, HttpResponse->GetResponseCode(),
+			HttpResponse->GetContentAsString(), ParsedResponse, Error);
+	}
 	if (Error.bIsError && TryScheduleRetry(
 		State,
 		EUnrealAIRetryReason::HttpError,
@@ -657,6 +752,46 @@ void UUnrealAIClient::HandleChatCompletionResponse(
 		return;
 	}
 	CompleteOneShotRequest(State, ParsedResponse, Error);
+}
+
+bool UUnrealAIClient::ProcessSseEvent(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+	const FUnrealAISseEvent& Frame, FUnrealAIError& OutError)
+{
+	State->bSawStreamEvent = true;
+	if (State->ResponseState)
+	{
+		TArray<FUnrealAIResponseEvent> Events;
+		if (!UnrealAIResponseAdapters::ParseStreamEvent(Frame, *State->ResponseState, Events, OutError))
+		{
+			return false;
+		}
+		for (FUnrealAIResponseEvent& Event : Events)
+		{
+			Event.RequestHandle.Id = State->RequestId;
+			State->ResponseEventDelegate.ExecuteIfBound(Event);
+			if (State->bTerminal)
+			{
+				break;
+			}
+		}
+	}
+	else
+	{
+		TArray<FUnrealAIChatStreamEvent> Events;
+		if (!UnrealAIProviderAdapters::Get(State->ProviderApi).ParseStreamEvent(Frame, State->ProviderState, Events, OutError))
+		{
+			return false;
+		}
+		for (const FUnrealAIChatStreamEvent& Event : Events)
+		{
+			State->EventDelegate.ExecuteIfBound(Event);
+			if (State->bTerminal)
+			{
+				break;
+			}
+		}
+	}
+	return true;
 }
 
 void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
@@ -730,10 +865,7 @@ void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
 
 		for (const FUnrealAISseEvent& SseEvent : SseEvents)
 		{
-			State->bSawStreamEvent = true;
-			TArray<FUnrealAIChatStreamEvent> Events;
-			if (!UnrealAIProviderAdapters::Get(State->ProviderApi).ParseStreamEvent(
-				SseEvent, State->ProviderState, Events, ParseError))
+			if (!ProcessSseEvent(State, SseEvent, ParseError))
 			{
 				const FHttpRequestPtr HttpRequest = State->HttpRequest;
 				CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Failed, ParseError);
@@ -744,13 +876,9 @@ void UUnrealAIClient::DrainStreamRequest(const FGuid& RequestId)
 				return;
 			}
 
-			for (const FUnrealAIChatStreamEvent& Event : Events)
+			if (!ActiveRequests.Contains(RequestId))
 			{
-				State->EventDelegate.ExecuteIfBound(Event);
-				if (!ActiveRequests.Contains(RequestId))
-				{
-					return;
-				}
+				return;
 			}
 		}
 	}
@@ -804,12 +932,18 @@ void UUnrealAIClient::HandleStreamResponse(
 	{
 		FUnrealAIChatResponse IgnoredResponse;
 		FUnrealAIError ProviderError;
-		UnrealAIProviderAdapters::Get(State->ProviderApi).ParseResponse(
-			State->RequestData.ResolvedModel,
-			HttpStatus,
-			UnrealAIClientPrivate::Utf8BytesToString(State->ErrorBodyBytes),
-			IgnoredResponse,
-			ProviderError);
+		if (State->ResponseState)
+		{
+			UnrealAIResponseAdapters::ParseResponse(HttpStatus,
+				UnrealAIClientPrivate::Utf8BytesToString(State->ErrorBodyBytes), *State->ResponseState);
+			ProviderError = State->ResponseState->Result.Error;
+		}
+		else
+		{
+			UnrealAIProviderAdapters::Get(State->ProviderApi).ParseResponse(
+				State->RequestData.ResolvedModel, HttpStatus,
+				UnrealAIClientPrivate::Utf8BytesToString(State->ErrorBodyBytes), IgnoredResponse, ProviderError);
+		}
 		if (!State->bSawStreamEvent && TryScheduleRetry(
 			State,
 			EUnrealAIRetryReason::HttpError,
@@ -845,25 +979,20 @@ void UUnrealAIClient::HandleStreamResponse(
 	}
 	for (const FUnrealAISseEvent& SseEvent : FinalSseEvents)
 	{
-		State->bSawStreamEvent = true;
-		TArray<FUnrealAIChatStreamEvent> Events;
-		if (!UnrealAIProviderAdapters::Get(State->ProviderApi).ParseStreamEvent(
-			SseEvent, State->ProviderState, Events, ParseError))
+		if (!ProcessSseEvent(State, SseEvent, ParseError))
 		{
 			CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Failed, ParseError);
 			return;
 		}
-		for (const FUnrealAIChatStreamEvent& Event : Events)
+		if (!ActiveRequests.Contains(RequestId))
 		{
-			State->EventDelegate.ExecuteIfBound(Event);
-			if (!ActiveRequests.Contains(RequestId))
-			{
-				return;
-			}
+			return;
 		}
 	}
 
-	if (!UnrealAIProviderAdapters::Get(State->ProviderApi).CanCompleteStream(State->ProviderState))
+	const bool bComplete = State->ResponseState ? UnrealAIResponseAdapters::CanCompleteStream(*State->ResponseState) :
+		UnrealAIProviderAdapters::Get(State->ProviderApi).CanCompleteStream(State->ProviderState);
+	if (!bComplete)
 	{
 		const FUnrealAIError Error = UnrealAIClientPrivate::MakeStreamError(
 			TEXT("The provider stream ended without its required terminal event."),
@@ -883,6 +1012,11 @@ void UUnrealAIClient::HandleStreamResponse(
 	}
 
 	FUnrealAIError NoError;
+	if (State->ResponseState)
+	{
+		UnrealAIResponseAdapters::Normalize(*State->ResponseState, true);
+		NoError = State->ResponseState->Result.Error;
+	}
 	CompleteStreamRequest(State, EUnrealAIChatStreamStatus::Completed, NoError);
 }
 
@@ -965,6 +1099,40 @@ bool UUnrealAIClient::TryScheduleRetry(
 	return true;
 }
 
+void UUnrealAIClient::DeliverResponseTerminal(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+	bool bCancelled, const FUnrealAIError& Error)
+{
+	if (!State->ResponseState)
+	{
+		return;
+	}
+	FUnrealAIResponseResult Result = MoveTemp(State->ResponseState->Result);
+	if (State->ResponseState->Snapshot)
+	{
+		// Preserve the latest opaque data even when interruption precedes item completion.
+		Result.Response.RawJson = UnrealAIResponseJson::Serialize(State->ResponseState->Snapshot);
+	}
+	Result.RequestHandle.Id = State->RequestId;
+	if (bCancelled)
+	{
+		Result.Status = EUnrealAIResponseStatus::Cancelled;
+		Result.Error = FUnrealAIError();
+	}
+	else if (Error.bIsError)
+	{
+		Result.Status = EUnrealAIResponseStatus::Failed;
+		Result.Error = Error;
+	}
+	if (Result.Status != EUnrealAIResponseStatus::Completed)
+	{
+		Result.Response.Continuation.ItemsJson.Reset();
+	}
+	State->ResponseDelegate.ExecuteIfBound(Result);
+	State->ResponseDelegate.Unbind();
+	State->ResponseEventDelegate.Unbind();
+	State->ResponseState.Reset();
+}
+
 void UUnrealAIClient::CompleteOneShotRequest(
 	const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
 	const FUnrealAIChatResponse& Response,
@@ -982,6 +1150,7 @@ void UUnrealAIClient::CompleteOneShotRequest(
 	State->RequestData.Headers.Reset();
 	State->RequestData.Body.Reset();
 
+	DeliverResponseTerminal(State, Error.Code == TEXT("request_cancelled"), Error);
 	State->CompletionDelegate.ExecuteIfBound(Response, Error);
 	State->CompletionDelegate.Unbind();
 	State->RetryDelegate.Unbind();
@@ -1021,6 +1190,7 @@ void UUnrealAIClient::CompleteStreamRequest(
 	Result.Status = Status;
 	Result.Response = State->ProviderState.Response;
 	Result.Error = Error;
+	DeliverResponseTerminal(State, Status == EUnrealAIChatStreamStatus::Cancelled, Error);
 	State->TerminalDelegate.ExecuteIfBound(Result);
 	State->EventDelegate.Unbind();
 	State->TerminalDelegate.Unbind();
@@ -1050,6 +1220,9 @@ void UUnrealAIClient::CancelAllRequests()
 		State->EventDelegate.Unbind();
 		State->TerminalDelegate.Unbind();
 		State->RetryDelegate.Unbind();
+		State->ResponseDelegate.Unbind();
+		State->ResponseEventDelegate.Unbind();
+		State->ResponseState.Reset();
 		const FHttpRequestPtr HttpRequest = State->HttpRequest;
 		UnrealAIClientPrivate::DetachHttpRequest(State);
 		State->RequestData.Headers.Reset();
@@ -1215,6 +1388,37 @@ void FUnrealAIClientTestAccess::RunRetryCoordinatorTests(FAutomationTestBase& Te
 		StreamResult.Status,
 		EUnrealAIChatStreamStatus::Cancelled);
 	Test.TestFalse(TEXT("Stream cancellation does not report a failure error"), StreamResult.Error.bIsError);
+	for (const UnrealAIClientPrivate::ERequestMode Mode :
+		{UnrealAIClientPrivate::ERequestMode::OneShot, UnrealAIClientPrivate::ERequestMode::Stream})
+	{
+		const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> ResponseState = MakeState(Mode);
+		ResponseState->ResponseState = MakeUnique<FUnrealAIResponseState>();
+		ResponseState->RequestData.Body = TEXT("fixture request body");
+		ResponseState->RequestData.Headers.Add(TEXT("fixture-header"), TEXT("fixture value"));
+		int32 ResponseTerminalCount = 0;
+		FUnrealAIResponseResult CancelledResponse;
+		ResponseState->ResponseDelegate = FUnrealAIResponseNativeDelegate::CreateLambda(
+			[&ResponseTerminalCount, &CancelledResponse](const FUnrealAIResponseResult& Result)
+			{
+				++ResponseTerminalCount;
+				CancelledResponse = Result;
+			});
+		Test.TestTrue(TEXT("Responses coordinator enters backoff"), Client->TryScheduleRetry(
+			ResponseState, EUnrealAIRetryReason::ConnectionError, 0, RetryError, FHttpResponsePtr()));
+		FUnrealAIRequestHandle ResponseHandle;
+		ResponseHandle.Id = ResponseState->RequestId;
+		Test.TestTrue(TEXT("Responses cancellation during backoff"), Client->CancelRequest(ResponseHandle));
+		Test.TestEqual(TEXT("Responses terminal once"), ResponseTerminalCount, 1);
+		Test.TestEqual(TEXT("Responses cancelled status"), CancelledResponse.Status, EUnrealAIResponseStatus::Cancelled);
+		Test.TestFalse(TEXT("Responses cancellation empty error"), CancelledResponse.Error.bIsError);
+		Test.TestEqual(TEXT("Responses stable logical ID"), CancelledResponse.RequestHandle.Id, ResponseHandle.Id);
+		Test.TestFalse(TEXT("Responses timer released"), ResponseState->RetryTickerHandle.IsValid());
+		Test.TestFalse(TEXT("Responses HTTP reference released"), ResponseState->HttpRequest.IsValid());
+		Test.TestFalse(TEXT("Responses delegate released"), ResponseState->ResponseDelegate.IsBound());
+		Test.TestFalse(TEXT("Responses parser state released"), ResponseState->ResponseState.IsValid());
+		Test.TestTrue(TEXT("Responses request data cleared"), ResponseState->RequestData.Body.IsEmpty() && ResponseState->RequestData.Headers.IsEmpty());
+		Test.TestFalse(TEXT("Responses duplicate cancellation rejected"), Client->CancelRequest(ResponseHandle));
+	}
 	Test.TestTrue(TEXT("The retry coordinator leaves no active test requests"), Client->ActiveRequests.IsEmpty());
 }
 

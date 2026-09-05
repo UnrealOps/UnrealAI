@@ -3,9 +3,11 @@
 #include "CoreMinimal.h"
 #include "Interfaces/IHttpRequest.h"
 #include "UnrealAITypes.h"
+#include "UnrealAIResponseTypes.h"
 #include "UnrealAIClient.generated.h"
 
 struct FUnrealAIRequestState;
+struct FUnrealAISseEvent;
 #if WITH_DEV_AUTOMATION_TESTS
 struct FUnrealAIClientTestAccess;
 #endif
@@ -50,6 +52,25 @@ public:
 	/** Cancels on the game thread; a terminal delegate may run synchronously. */
 	bool CancelRequest(const FUnrealAIRequestHandle& RequestHandle);
 
+	/** One provider turn; tool execution and subsequent turns belong to the caller.
+	 * Callbacks run on the game thread. Preflight failures may complete synchronously.
+	 */
+	FUnrealAIRequestHandle CreateResponse(const FUnrealAIResponseRequest& Request,
+		FUnrealAIResponseNativeDelegate CompletionDelegate,
+		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
+
+	/** Streams ordered response items, followed by exactly one terminal callback. */
+	FUnrealAIRequestHandle StreamResponse(const FUnrealAIResponseRequest& Request,
+		FUnrealAIResponseEventNativeDelegate EventDelegate,
+		FUnrealAIResponseNativeDelegate TerminalDelegate,
+		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
+
+	UFUNCTION(BlueprintPure, Category = "UnrealAI|Responses")
+	FUnrealAIResponseCapabilities GetResponseCapabilities() const;
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealAI|Responses")
+	bool ValidateResponseRequest(const FUnrealAIResponseRequest& Request, FUnrealAIError& OutError) const;
+
 	virtual void BeginDestroy() override;
 
 private:
@@ -62,6 +83,13 @@ private:
 	TMap<FGuid, TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>> ActiveRequests;
 
 	FString ResolveApiKey() const;
+	FUnrealAIRequestHandle StartResponse(const FUnrealAIResponseRequest& Request, bool bStream,
+		FUnrealAIResponseEventNativeDelegate EventDelegate, FUnrealAIResponseNativeDelegate TerminalDelegate,
+		FUnrealAIRetryNativeDelegate RetryDelegate);
+	bool ProcessSseEvent(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+		const FUnrealAISseEvent& Frame, FUnrealAIError& OutError);
+	void DeliverResponseTerminal(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State,
+		bool bCancelled, const FUnrealAIError& Error);
 	void StartRequestAttempt(const TSharedPtr<FUnrealAIRequestState, ESPMode::ThreadSafe>& State);
 	void ResumeRequestAfterBackoff(const FGuid& RequestId);
 	void HandleChatCompletionResponse(
