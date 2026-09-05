@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/UnrealOps/UnrealAI/compare/v0.5.0...v0.6.0) (2026-09-05)
+
+
+### Features
+
+* **responses:** add provider-neutral Responses API ([#12](https://github.com/UnrealOps/UnrealAI/issues/12)) ([7aa7fdf](https://github.com/UnrealOps/UnrealAI/commit/7aa7fdfbb8a1e4e9687475de7ea6322cdad7c1e3))
+
 ## [0.5.0](https://github.com/UnrealOps/UnrealAI/compare/v0.4.0...v0.5.0) (2026-09-05)
 
 
