@@ -226,6 +226,7 @@ FUnrealAIRequestHandle UUnrealAIClient::CreateChatCompletion(
 	FUnrealAIChatCompletionNativeDelegate CompletionDelegate,
 	FUnrealAIRetryNativeDelegate RetryDelegate)
 {
+	check(IsInGameThread());
 	auto FailBeforeStart = [&CompletionDelegate](const FUnrealAIError& Error)
 	{
 		FUnrealAIChatResponse EmptyResponse;
@@ -301,6 +302,7 @@ FUnrealAIRequestHandle UUnrealAIClient::StreamChatCompletion(
 	FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate,
 	FUnrealAIRetryNativeDelegate RetryDelegate)
 {
+	check(IsInGameThread());
 	auto FailBeforeStart = [&TerminalDelegate](const FUnrealAIError& Error)
 	{
 		FUnrealAIChatStreamResult Result;
@@ -548,6 +550,7 @@ void UUnrealAIClient::ResumeRequestAfterBackoff(const FGuid& RequestId)
 
 bool UUnrealAIClient::CancelRequest(const FUnrealAIRequestHandle& RequestHandle)
 {
+	check(IsInGameThread());
 	if (!RequestHandle.IsValid())
 	{
 		return false;
@@ -1090,6 +1093,9 @@ void FUnrealAIClientTestAccess::RunRetryCoordinatorTests(FAutomationTestBase& Te
 
 	const TSharedRef<FUnrealAIRequestState, ESPMode::ThreadSafe> RestartState =
 		MakeState(UnrealAIClientPrivate::ERequestMode::OneShot);
+	const FString StableRequestBody =
+		TEXT("{\"game_request_id\":\"00000000-0000-0000-0000-000000000042\"}");
+	RestartState->RequestData.Body = StableRequestBody;
 	int32 RetryEventCount = 0;
 	FUnrealAIRetryEvent ObservedRetryEvent;
 	RestartState->RetryDelegate = FUnrealAIRetryNativeDelegate::CreateLambda(
@@ -1099,9 +1105,13 @@ void FUnrealAIClientTestAccess::RunRetryCoordinatorTests(FAutomationTestBase& Te
 			ObservedRetryEvent = Event;
 		});
 	int32 StartAttemptCount = 0;
-	RestartState->StartAttemptForTesting = [&StartAttemptCount]()
+	FString ObservedRetriedBody;
+	FUnrealAIRequestState* RestartStatePtr = &RestartState.Get();
+	RestartState->StartAttemptForTesting =
+		[&StartAttemptCount, &ObservedRetriedBody, RestartStatePtr]()
 	{
 		++StartAttemptCount;
+		ObservedRetriedBody = RestartStatePtr->RequestData.Body;
 	};
 
 	Test.TestTrue(
@@ -1124,6 +1134,10 @@ void FUnrealAIClientTestAccess::RunRetryCoordinatorTests(FAutomationTestBase& Te
 	Client->ResumeRequestAfterBackoff(RestartState->RequestId);
 	Test.TestEqual(TEXT("Resuming backoff starts exactly one attempt"), StartAttemptCount, 1);
 	Test.TestEqual(TEXT("The resumed request advances its attempt number"), RestartState->AttemptNumber, 1);
+	Test.TestEqual(
+		TEXT("A retry reuses the originally serialized request body"),
+		ObservedRetriedBody,
+		StableRequestBody);
 	Test.TestFalse(TEXT("The resumed request is no longer waiting"), RestartState->bWaitingForRetry);
 
 	FUnrealAIRequestHandle RestartHandle;

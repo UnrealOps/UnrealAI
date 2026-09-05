@@ -5,6 +5,10 @@
 #include "UnrealAIClient.h"
 #include "UnrealAIChatComponent.generated.h"
 
+#if WITH_DEV_AUTOMATION_TESTS
+struct FUnrealAIChatComponentTestAccess;
+#endif
+
 UCLASS(ClassGroup = (AI), meta = (BlueprintSpawnableComponent))
 class UNREALAI_API UUnrealAIChatComponent : public UActorComponent
 {
@@ -80,6 +84,10 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FUnrealAIChatComponentTestAccess;
+#endif
+
 	UPROPERTY()
 	TObjectPtr<UUnrealAIClient> Client;
 
@@ -87,6 +95,8 @@ private:
 	TMap<FGuid, FUnrealAIRequestHandle> ActiveCompletionHandles;
 	bool bEndingPlay = false;
 
+	TArray<FUnrealAIChatMessage> BuildPromptMessages(const FString& Prompt) const;
+	FUnrealAIChatRequest BuildRequest(const TArray<FUnrealAIChatMessage>& Messages) const;
 	bool EnsureClient(FUnrealAIError& OutError);
 	void HandleCompletion(FGuid CompletionId, const FUnrealAIChatResponse& Response, const FUnrealAIError& Error);
 	void HandleRetry(const FUnrealAIRetryEvent& RetryEvent);

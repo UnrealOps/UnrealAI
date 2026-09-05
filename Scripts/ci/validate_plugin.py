@@ -15,6 +15,9 @@ REPOSITORY_ROOT = Path(
     os.environ.get("UNREALAI_REPOSITORY_ROOT", Path(__file__).resolve().parents[2])
 ).resolve()
 DESCRIPTOR_PATH = REPOSITORY_ROOT / "UnrealAI.uplugin"
+SAMPLE_ROOT = REPOSITORY_ROOT / "Samples" / "UnrealAISample"
+SAMPLE_DESCRIPTOR_PATH = SAMPLE_ROOT / "UnrealAISample.uproject"
+HOST_DESCRIPTOR_PATH = REPOSITORY_ROOT / "Tests" / "HostProject" / "UnrealAIHost.uproject"
 GENERATED_DIRECTORIES = {"Binaries", "DerivedDataCache", "Intermediate", "Saved"}
 CREDENTIAL_FILENAMES = {
     ".env",
@@ -35,6 +38,10 @@ SECRET_PATTERNS = {
     "JWT": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     "credential in URL": re.compile(r"https?://[^\s/:]+:[^\s/@]+@"),
+    "non-empty sensitive configuration value": re.compile(
+        r"(?im)^\s*(?:api_?key|password|secret|security_?token)\s*=\s*"
+        r"(?!(?:your[_-]|example|placeholder|<)[^\r\n]*$)\S+[^\r\n]*$"
+    ),
 }
 PERSONAL_PATH_PATTERN = re.compile(
     r"(?:/Users/[A-Za-z0-9._-]+(?:/|\b)|/home/[A-Za-z0-9._-]+(?:/|\b)|[A-Za-z]:\\Users\\[A-Za-z0-9._-]+(?:\\|\b))"
@@ -142,6 +149,8 @@ def validate_gitignore(errors: list[str]) -> None:
         "DerivedDataCache/",
         "Intermediate/",
         "Saved/",
+        "Samples/*/Build/",
+        "Samples/*/Config/DefaultInput.ini",
     }
     for missing_rule in sorted(required_rules - rules):
         add_error(errors, f".gitignore is missing required rule: {missing_rule}")
@@ -173,6 +182,84 @@ def validate_env_example(errors: list[str]) -> None:
     }
     for missing_name in sorted(required_api_key_variables - names):
         add_error(errors, f".env.example is missing built-in provider variable: {missing_name}")
+
+
+def validate_sample_project(errors: list[str]) -> None:
+    try:
+        descriptor = json.loads(SAMPLE_DESCRIPTOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        add_error(errors, f"Sample project descriptor is not valid UTF-8 JSON: {exc}")
+        return
+
+    if descriptor.get("AdditionalPluginDirectories") != ["../../.."]:
+        add_error(errors, "Sample project must discover the repository plugin through ../../...")
+
+    plugins = descriptor.get("Plugins")
+    if not isinstance(plugins, list) or not any(
+        isinstance(plugin, dict)
+        and plugin.get("Name") == "UnrealAI"
+        and plugin.get("Enabled") is True
+        for plugin in plugins
+    ):
+        add_error(errors, "Sample project must enable the UnrealAI plugin.")
+    if not isinstance(plugins, list) or not any(
+        isinstance(plugin, dict)
+        and plugin.get("Name") == "AndroidFileServer"
+        and plugin.get("Enabled") is False
+        for plugin in plugins
+    ):
+        add_error(errors, "Sample project must disable AndroidFileServer to avoid generated security tokens.")
+
+    modules = descriptor.get("Modules")
+    expected_modules = {"UnrealAISample", "UnrealAISampleEditor"}
+    declared_modules = {
+        module.get("Name")
+        for module in modules
+        if isinstance(module, dict) and isinstance(module.get("Name"), str)
+    } if isinstance(modules, list) else set()
+    for missing_module in sorted(expected_modules - declared_modules):
+        add_error(errors, f"Sample project is missing module: {missing_module}")
+    for module_name in sorted(expected_modules):
+        rules_path = SAMPLE_ROOT / "Source" / module_name / f"{module_name}.Build.cs"
+        if not rules_path.is_file():
+            add_error(errors, f"Sample module rules file is missing: {rules_path.relative_to(REPOSITORY_ROOT)}")
+
+    required_sample_files = (
+        SAMPLE_ROOT / "README.md",
+        SAMPLE_ROOT / "Content" / "Blueprints" / "BP_UnrealAIGettingStarted.uasset",
+        SAMPLE_ROOT / "Content" / "Maps" / "UnrealAISampleMap.umap",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Public" / "UnrealAISampleActor.h",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Private" / "UnrealAISampleActor.cpp",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Public" / "UnrealAIMultiTurnExample.h",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Private" / "UnrealAIMultiTurnExample.cpp",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Public" / "UnrealAIProductionDeploymentExample.h",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Private" / "UnrealAIProductionDeploymentExample.cpp",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Public" / "UnrealAIStreamingExample.h",
+        SAMPLE_ROOT / "Source" / "UnrealAISample" / "Private" / "UnrealAIStreamingExample.cpp",
+    )
+    for required_path in required_sample_files:
+        if not required_path.is_file():
+            add_error(errors, f"Required sample file is missing: {required_path.relative_to(REPOSITORY_ROOT)}")
+
+
+def validate_host_project(errors: list[str]) -> None:
+    try:
+        descriptor = json.loads(HOST_DESCRIPTOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        add_error(errors, f"Automation host project descriptor is not valid UTF-8 JSON: {exc}")
+        return
+
+    plugins = descriptor.get("Plugins")
+    if not isinstance(plugins, list) or not any(
+        isinstance(plugin, dict)
+        and plugin.get("Name") == "AndroidFileServer"
+        and plugin.get("Enabled") is False
+        for plugin in plugins
+    ):
+        add_error(
+            errors,
+            "Automation host project must disable AndroidFileServer so native tests do not depend on its platform module.",
+        )
 
 
 def validate_files(files: list[Path], errors: list[str]) -> None:
@@ -228,6 +315,8 @@ def main() -> int:
     validate_descriptor(errors)
     validate_gitignore(errors)
     validate_env_example(errors)
+    validate_sample_project(errors)
+    validate_host_project(errors)
     validate_files(files, errors)
 
     if errors:

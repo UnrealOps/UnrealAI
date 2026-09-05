@@ -9,6 +9,7 @@
 #include "UnrealAIChatComponent.h"
 #include "UnrealAIChatStreamAsyncAction.h"
 #include "UnrealAIClient.h"
+#include "Tests/UnrealAIChatComponentTestSupport.h"
 #include "Tests/UnrealAIClientTestSupport.h"
 #include "UnrealAIProviderAdapter.h"
 #include "UnrealAIProviders.h"
@@ -25,6 +26,18 @@ namespace UnrealAIAutomationTestsPrivate
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
 		return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealAIChatComponentRequestConstructionTest,
+	"UnrealAI.ChatComponent.RequestConstruction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealAIChatComponentRequestConstructionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FUnrealAIChatComponentTestAccess::RunRequestConstructionTests(*this);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -218,7 +231,8 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 	FUnrealAIChatRequest OpenAIRequest = Request;
 	OpenAIRequest.NumChoices = 2;
 	OpenAIRequest.ResponseFormatJson = TEXT("{\"type\":\"json_object\"}");
-	OpenAIRequest.AdditionalParametersJson = TEXT("{\"seed\":42}");
+	OpenAIRequest.AdditionalParametersJson =
+		TEXT("{\"seed\":42,\"game_request_id\":\"00000000-0000-0000-0000-000000000042\"}");
 	FUnrealAIProviderConfig OpenAIConfig;
 	OpenAIConfig.Api = EUnrealAIProviderApi::OpenAICompatibleChatCompletions;
 	OpenAIConfig.BaseUrl = TEXT("https://compatible.example/v1/");
@@ -252,10 +266,18 @@ bool FUnrealAIProviderAdaptersTest::RunTest(const FString& Parameters)
 	{
 		int32 NumChoices = 0;
 		int32 Seed = 0;
+		FString GameRequestId;
 		TestTrue(TEXT("OpenAI-compatible request includes n"), OpenAIPayload->TryGetNumberField(TEXT("n"), NumChoices));
 		TestEqual(TEXT("OpenAI-compatible request maps choice count"), NumChoices, 2);
 		TestTrue(TEXT("OpenAI-compatible request merges additional parameters"), OpenAIPayload->TryGetNumberField(TEXT("seed"), Seed));
 		TestEqual(TEXT("OpenAI-compatible additional parameters preserve values"), Seed, 42);
+		TestTrue(
+			TEXT("OpenAI-compatible wire JSON contains the backend idempotency field"),
+			OpenAIPayload->TryGetStringField(TEXT("game_request_id"), GameRequestId));
+		TestEqual(
+			TEXT("OpenAI-compatible wire JSON preserves the backend idempotency value"),
+			GameRequestId,
+			FString(TEXT("00000000-0000-0000-0000-000000000042")));
 		TestTrue(TEXT("OpenAI-compatible request includes response_format"), OpenAIPayload->HasTypedField<EJson::Object>(TEXT("response_format")));
 	}
 

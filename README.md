@@ -6,7 +6,7 @@
 
 Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API for OpenAI, xAI, Anthropic, Google Gemini, and custom OpenAI-compatible providers.
 
-📚 See the [plugin guide](Documentation/README.md) for advanced request fields and the [CI guide](Documentation/ContinuousIntegration.md) for packaging and test automation.
+📚 See the [plugin guide](Documentation/README.md) for advanced request fields, the [production-readiness guide](Documentation/ProductionReadiness.md) for launch gaps and remediation, and the [CI guide](Documentation/ContinuousIntegration.md) for packaging and test automation.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ Build AI-powered gameplay and tools from C++ or Blueprints with one runtime API 
 - [Requirements](#-requirements)
 - [Installation](#-installation)
 - [Quickstart](#-quickstart)
+- [Sample project](#-sample-project)
 - [Blueprint usage](#-blueprint-usage)
 - [C++ usage](#-c-usage)
 - [Provider configuration](#-provider-configuration)
@@ -108,6 +109,10 @@ Add `.env` to the consuming project's `.gitignore`. Never commit API keys or pla
 ### 3. Run in the editor
 
 Start PIE and trigger the request. UnrealAI loads the project-root `.env` before resolving the provider profile. Existing process environment variables take precedence.
+
+## 🧪 Sample project
+
+Open the [UnrealAI sample project](Samples/UnrealAISample/README.md) for a buildable Unreal Engine 5.7 consumer with native owners, a direct-provider Blueprint, a credential-free packaged-chat Widget Blueprint, a starter level, offline contract coverage, and opt-in live provider tests. The project references this checkout through a portable relative plugin path, so it does not duplicate the plugin or require a symlink.
 
 ## 🔷 Blueprint usage
 
@@ -327,7 +332,7 @@ python3 Scripts/ci/validate_plugin.py
 python3 Scripts/ci/validate_skills.py
 ```
 
-With a native Unreal Engine installation available, package the plugin and run its automation tests:
+With a native Unreal Engine installation available, package the plugin, compile the skill examples, and run both automation suites:
 
 ```bash
 UNREAL_ENGINE_ROOT=/path/to/UnrealEngine \
@@ -336,9 +341,12 @@ UNREAL_ENGINE_ROOT=/path/to/UnrealEngine \
 
 Use `--platform Win64` on Windows or `--platform Linux` on Linux. The GitHub Actions configuration contains a manual native-host matrix for all three platforms.
 
+For a faster recipe-only check, run `Scripts/ci/run_skill_contracts.py --platform <Mac|Win64|Linux>`. Unlike the portable skill lint, this stages an isolated sample copy, builds its C++ modules, executes the Blueprint generator, reloads the generated asset, runs behavioral tests, and fails when any required contract is absent from the report.
+
 ## 📚 Documentation
 
 - [Plugin configuration and advanced usage](Documentation/README.md)
+- [Production-readiness gaps and remediation](Documentation/ProductionReadiness.md)
 - [Continuous integration](Documentation/ContinuousIntegration.md)
 - [Changelog](CHANGELOG.md)
 - [Example environment variables](.env.example)

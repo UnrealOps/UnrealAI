@@ -28,15 +28,26 @@ public:
 	UFUNCTION(BlueprintPure, Category = "UnrealAI")
 	const FUnrealAIProviderConfig& GetProviderConfig() const;
 
+	/**
+	 * Starts one logical request. Call from the game thread. Completion and retry
+	 * delegates are delivered on the game thread; validation failures may invoke
+	 * completion synchronously before this function returns.
+	 */
 	FUnrealAIRequestHandle CreateChatCompletion(
 		const FUnrealAIChatRequest& Request,
 		FUnrealAIChatCompletionNativeDelegate CompletionDelegate,
 		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
+	/**
+	 * Starts one logical SSE stream. Call from the game thread. Event, terminal,
+	 * and retry delegates are delivered on the game thread; preflight failures may
+	 * invoke the terminal delegate synchronously before this function returns.
+	 */
 	FUnrealAIRequestHandle StreamChatCompletion(
 		const FUnrealAIChatRequest& Request,
 		FUnrealAIChatStreamEventNativeDelegate EventDelegate,
 		FUnrealAIChatStreamTerminalNativeDelegate TerminalDelegate,
 		FUnrealAIRetryNativeDelegate RetryDelegate = FUnrealAIRetryNativeDelegate());
+	/** Cancels on the game thread; a terminal delegate may run synchronously. */
 	bool CancelRequest(const FUnrealAIRequestHandle& RequestHandle);
 
 	virtual void BeginDestroy() override;
