@@ -44,7 +44,7 @@ jobs:
           git fetch --no-tags origin main:refs/remotes/origin/main
           trusted_scripts="${RUNNER_TEMP}/unrealai-release-ci"
           mkdir -p "${trusted_scripts}"
-          for script in sync_release_version.py validate_plugin.py validate_skills.py validate_release.py; do
+          for script in sync_release_version.py validate_plugin.py validate_sdk_boundaries.py validate_skills.py validate_release.py; do
             git show "origin/main:Scripts/ci/${script}" > "${trusted_scripts}/${script}"
           done
 
