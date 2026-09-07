@@ -39,7 +39,7 @@ UnrealAI is a provider-neutral Unreal Engine runtime plugin for adding generativ
 - **Provider-neutral SSE streaming** — receive ordered text, finish, usage, and raw provider events with cancellation and an accumulated result.
 - **Built-in retry and backoff** — recover from transient transport and provider failures with bounded exponential backoff, jitter, `Retry-After` support, notifications, and cancellation.
 
-UnrealAI implements one-shot and streaming text generation through three protocol adapters. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
+UnrealAI also exposes a native C++ execution service, typed model-provider interfaces, bounded image input, and optional authentication plugins. Agent orchestration and scene interaction belong to the consuming framework. See [Features and roadmap](#-features-and-roadmap) for the current boundaries.
 
 ## 📋 Requirements
 
@@ -73,6 +73,8 @@ PrivateDependencyModuleNames.Add("UnrealAI");
 ```
 
 Use a public dependency instead if UnrealAI types appear in that module's public headers.
+
+The base SDK works independently of any agent framework or consuming application. For native providers, exact connection policies, secure storage, OAuth, and addon installation, see [Native SDK and optional authentication](Documentation/NativeSDK.md). Ordinary Blueprint and C++ callers can keep the quickstart below. Optional plugins live under `Addons/` in this repository and must be installed as sibling plugins with `Scripts/install_addons.py`.
 
 ## ⚡ Quickstart
 
@@ -294,7 +296,7 @@ GEMINI_MODEL=gemini-3.7-flash
 
 For backward compatibility, the XAI profile falls back to `OPENAI_BASE_URL` and `OPENAI_MODEL` only when its `XAI_*` overrides are unset. Custom profiles can target other OpenAI-compatible providers or local gateways by selecting the OpenAI-compatible protocol. API-key overrides stored directly in project settings are supported for development, but environment variables or a trusted server are safer choices.
 
-The legacy chat request covers text messages, system instructions, sampling, output-token limits, and stop sequences. Its choice count and `ResponseFormatJson` remain OpenAI-compatible features. New **[Responses APIs](Documentation/Responses.md)** add typed function calls/results, refusals, structured-output requests, item-level SSE events, and provider-bound continuation across OpenAI Responses, compatible Chat Completions/xAI, Anthropic Messages, and Gemini generateContent. Existing chat methods and Blueprint assets remain compatible. Reasoning/signatures and sidecar metadata are preserved as opaque provider data; media helpers and an agent executor remain deferred.
+The legacy chat request covers text messages, system instructions, sampling, output-token limits, and stop sequences. Its choice count and `ResponseFormatJson` remain OpenAI-compatible features. New **[Responses APIs](Documentation/Responses.md)** add typed function calls/results, refusals, structured-output requests, item-level SSE events, and provider-bound continuation across OpenAI Responses, compatible Chat Completions/xAI, Anthropic Messages, and Gemini generateContent. Existing chat methods and Blueprint assets remain compatible. Reasoning/signatures and sidecar metadata are preserved as opaque provider data; inline PNG/JPEG image input is available. Audio, embeddings, and an agent executor are outside this implementation.
 
 For a complete C++ tool round trip, use the [compiled response example](Samples/UnrealAISample/Source/UnrealAISample/Private/UnrealAIResponseExample.cpp). The sample generator also creates `BP_UnrealAIResponses` and `BP_UnrealAIStreamResponses` with two actual response async nodes; the [Responses guide](Documentation/Responses.md) covers setup and validation.
 
@@ -314,7 +316,11 @@ For a complete C++ tool round trip, use the [compiled response example](Samples/
 | Provider-neutral SSE text streaming and cancellation | Available |
 | Built-in retry and backoff policy | Available |
 | Responses API abstraction: typed tools, structured output, continuation | Available |
-| Image, audio, and embedding helpers | Planned |
+| Inline PNG/JPEG input through Responses | Available |
+| UObject-free native execution and bounded model-provider SPI | Available |
+| Explicit Gemini Interactions through native provider SPI | Available; convenience Gemini stays on generateContent |
+| Secure stores and OAuth | Optional UnrealAIAuth plugin |
+| Audio and embedding helpers | Planned |
 
 ## 🤖 Agent skills
 

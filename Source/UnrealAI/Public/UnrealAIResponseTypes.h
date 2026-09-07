@@ -18,7 +18,8 @@ enum class EUnrealAIResponsePartType : uint8
 {
 	Text,
 	Refusal,
-	ProviderData
+	ProviderData,
+	Image
 };
 
 UENUM(BlueprintType)
@@ -76,6 +77,14 @@ struct UNREALAI_API FUnrealAIResponsePart
 
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealAI|Responses")
 	FString RawJson;
+
+	/** Inline image input only. Capture, spatial interpretation, and scene access belong to the caller. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnrealAI|Responses")
+	FString MimeType;
+
+	/** PNG or JPEG encoded bytes, bounded to 2 MiB per image before base64 encoding. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnrealAI|Responses")
+	TArray<uint8> ImageBytes;
 };
 
 USTRUCT(BlueprintType)
@@ -348,8 +357,9 @@ struct UNREALAI_API FUnrealAIResponseEvent
 	FString RawJson;
 };
 
-DECLARE_DELEGATE_OneParam(FUnrealAIResponseNativeDelegate, const FUnrealAIResponseResult&);
-DECLARE_DELEGATE_OneParam(FUnrealAIResponseEventNativeDelegate, const FUnrealAIResponseEvent&);
+DECLARE_DELEGATE_OneParam(FUnrealAIResponseNativeDelegate, const FUnrealAIResponseResult &);
+DECLARE_DELEGATE_OneParam(FUnrealAIResponseEventNativeDelegate, const FUnrealAIResponseEvent &);
 // K2 async nodes derive data pins from the first delegate. All paths share a signature.
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FUnrealAIResponseActionPin,
-	const FUnrealAIResponseResult&, Result, const FUnrealAIResponseEvent&, ResponseEvent, const FUnrealAIRetryEvent&, RetryEvent);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FUnrealAIResponseActionPin, const FUnrealAIResponseResult &, Result,
+											   const FUnrealAIResponseEvent &, ResponseEvent,
+											   const FUnrealAIRetryEvent &, RetryEvent);

@@ -27,6 +27,7 @@ STREAMING_REFERENCE_PATH = SKILLS_ROOT / "unrealai-cpp/references/streaming-clie
 
 SKILL_PACKAGES = {
     "unrealai-cpp": (
+        "references/native-sdk.md",
         "references/responses-client.md",
         "references/client-setup.md",
         "references/one-shot-client.md",

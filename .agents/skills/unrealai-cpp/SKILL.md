@@ -35,6 +35,10 @@ Load references by integration type; do not read unrelated references:
 - [references/dedicated-server-deployment.md](references/dedicated-server-deployment.md): controlled Unreal dedicated servers calling providers.
 - [references/backend-deployment.md](references/backend-deployment.md): external backend policy, compatible endpoints, and streaming relays.
 
+## Native SDK integrations
+
+Read [native-sdk.md](references/native-sdk.md) when integrating an agent runtime, a UObject-free service, destination-bound credentials, or optional OAuth plugins. The ordinary client recipes below remain the shortest path for Blueprint-compatible gameplay.
+
 ## Choose the integration
 
 - Use `CreateResponse` / `StreamResponse` for typed tools, structured output, and provider-bound continuation; follow `responses-client.md` for the complete compiled example.
@@ -54,14 +58,14 @@ Preserve the integration style already used by the consumer unless the user asks
 - Give every `UUnrealAIClient` an appropriate `UObject` outer and retain it in a `UPROPERTY` for the entire asynchronous request. A temporary unreferenced client can be garbage-collected.
 - Create the client through `UUnrealAIProviders`, or call `Configure`/`ConfigureFromSettings`, before submitting any request.
 - Keep common request code provider-neutral. Provider-native JSON passed through `ContentJson`, `AdditionalFieldsJson`, or `AdditionalParametersJson` must match the selected adapter.
-- Treat legacy choice count and `ResponseFormatJson` as OpenAI-compatible chat features. Use `CreateResponse` / `StreamResponse` for normalized tools and structured output across adapters; media helpers remain deferred.
+- Treat legacy choice count and `ResponseFormatJson` as OpenAI-compatible chat features. Use `CreateResponse` / `StreamResponse` for normalized tools and structured output across adapters; Responses supports bounded inline PNG/JPEG parts; image capture remains application-owned.
 - Handle `FUnrealAIError` before reading the response, and tolerate a successful response with no choices.
 - Leave `Request.Model` empty when the configured provider's default model is intended.
 - Do not set `bStream`; it is deprecated. Choose `CreateChatCompletion` or `StreamChatCompletion` explicitly.
 - Treat a request handle as one logical operation across retries and use it only with the client that returned it.
 - Give conversation history, request state, and commit/rollback policy exactly one owner.
 - Never hardcode, print, commit, or package API keys. A project-root `.env` is for local development. Shipped clients should call a trusted backend that owns hosted-provider secrets.
-- UnrealAI does not currently enforce the production credential boundary, authenticate players, authorize requests, moderate content, impose per-player budgets, or provide a circuit breaker. Add these at the application/backend layer and document the selected deployment boundary.
+- Shipping-client admission rejects direct provider credentials. Native gateway credentials require an explicit destination and billing policy. Shared circuit-breaker mechanisms are available in UnrealAIAccess; player authentication, authorization, moderation, and per-player budgets remain application/backend responsibilities.
 - Keep ordinary integration code platform-neutral. Use Unreal abstractions such as `FPlatformMisc`, `FPaths`, and the plugin API instead of OS-specific environment or HTTP code.
 
 ## Verify the result

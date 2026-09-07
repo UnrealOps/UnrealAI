@@ -7,8 +7,8 @@ This file applies to the entire repository. UnrealAI is a standalone Unreal Engi
 - `UnrealAI.uplugin` is the plugin descriptor and version source of truth.
 - `UnrealAI.uplugin` contains the current release version. Release automation began at `0.1.0`, and tags use the `v<VersionName>` form.
 - Unreal Engine 5.7 is the currently validated engine release.
-- `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
-- Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff. The additive Responses API supports typed text/refusal/tool items, structured-output requests, and provider-bound continuation across OpenAI Responses, compatible Chat Completions, Anthropic Messages, and Gemini generateContent. Reasoning/signatures remain opaque provider data. Do not claim media helpers, hosted tools, Gemini Interactions, or an agent executor are implemented.
+- The base plugin contains `UnrealAI`, `UnrealAIAccess`, and `UnrealAITransport`; optional auth and experimental integrations live under `Addons/`. Keep the base independent of those addons and consuming applications. `UnrealAI` is a runtime module. Do not introduce editor-only dependencies into its runtime or public API.
+- Chat generation supports one-shot responses, provider-neutral text-first SSE streaming, and bounded retry/backoff. The additive Responses API supports typed text/refusal/tool items, structured-output requests, and provider-bound continuation across OpenAI Responses, compatible Chat Completions, Anthropic Messages, and Gemini generateContent. Reasoning/signatures remain opaque provider data. Inline PNG/JPEG Responses input and explicit Gemini Interactions in the native provider SPI are implemented. Do not claim audio, embeddings, arbitrary hosted tools, or an agent executor are implemented.
 - The built-in provider defaults are defined in `Source/UnrealAI/Private/UnrealAISettings.cpp`. Avoid duplicating those values unless a user-facing example requires them, and update every documented and validated copy when they change.
 
 ## Repository Map
@@ -43,6 +43,10 @@ Never edit or commit generated `Binaries/`, `DerivedDataCache/`, `Intermediate/`
 7. Do not create releases, tags, or history-rewriting commits manually unless explicitly requested. Let the release workflow own normal tags and GitHub Releases.
 
 When working in a consuming Unreal project, use `.agents/skills/unrealai-cpp` for native integrations and `.agents/skills/unrealai-blueprints` for Blueprint flows. The current checkout's public headers remain authoritative.
+
+## Native SDK ownership
+
+See `Documentation/NativeSDK.md` for the native convenience/SPI distinction, thread contracts, physical settlement, and optional installation. Native model callbacks may arrive on workers. Never execute agent tools, scene mutations, or world authority inside the SDK. Keep strict destination credentials distinct from the portable convenience transport. Shared provider/access tests belong to the SDK; world adaptation tests belong to the consuming application.
 
 ## Architecture and API Rules
 

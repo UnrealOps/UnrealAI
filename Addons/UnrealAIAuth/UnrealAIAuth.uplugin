@@ -1,0 +1,29 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "UnrealAI Authentication",
+  "Description": "Optional secure credential storage and account authentication for UnrealAI.",
+  "Category": "AI",
+  "CreatedBy": "UnrealOps",
+  "EnabledByDefault": false,
+  "CanContainContent": false,
+  "Modules": [
+    {
+      "Name": "UnrealAIAuth",
+      "Type": "Runtime",
+      "LoadingPhase": "PreDefault"
+    },
+    {
+      "Name": "UnrealAIAuthEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "UnrealAI",
+      "Enabled": true
+    }
+  ]
+}

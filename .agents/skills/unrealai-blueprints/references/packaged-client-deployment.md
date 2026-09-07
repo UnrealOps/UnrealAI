@@ -4,7 +4,7 @@ Use this reference for a Blueprint-facing feature shipped in a player-controlled
 
 For a packaged Blueprint UI with bounded history and backend streaming, load `backend-streaming-conversation.md` instead; it is the canonical combined implementation recipe.
 
-UnrealAI does not enforce the credential boundary or provide player authentication, authorization, moderation, quotas, durable history, or circuit breaking. `Switch Has Authority` controls gameplay authority; it does not turn a listen server or cooked asset into a trusted credential store.
+UnrealAI rejects direct provider credentials in Shipping-client admission and exposes native circuit-breaker mechanisms. Player authentication, authorization, moderation, quotas, and durable history remain application responsibilities. `Switch Has Authority` controls gameplay authority; it does not turn a listen server or cooked asset into a trusted credential store.
 
 ## Recipe: packaged Blueprint client
 

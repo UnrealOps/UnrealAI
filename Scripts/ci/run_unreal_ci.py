@@ -164,6 +164,35 @@ def main() -> int:
             target_platform,
         )
     )
+    # Stock BuildPlugin cannot find sibling dependencies; retain its compiler and
+    # package filter through the project-local dependency host instead.
+    from package_with_dependencies import prepare as prepare_package
+    package_command = prepare_package(engine_root,
+        REPOSITORY_ROOT / "Addons/UnrealAIExperimentalAccess",
+        [REPOSITORY_ROOT / "Addons/UnrealAIAuth", REPOSITORY_ROOT],
+        output_root / "Addons", target_platform)
+    run(uat_command(run_uat, package_command))
+
+    # Compile consumers with the exact base/auth/experimental dependency closure.
+    from prepare_native_consumer import prepare
+    from run_skill_contracts import PLATFORM_CONFIG as BUILD_CONFIG, native_command
+    build = engine_root / BUILD_CONFIG[target_platform]["build"]
+    for mode in ("base", "auth", "experimental"):
+        consumer_root = output_root / "Consumers" / mode
+        consumer = prepare(consumer_root, mode, package_directory, addons_root=output_root / "Addons/Package")
+        run(native_command([str(build), "UnrealAIConsumerEditor", target_platform,
+            "Development", str(consumer), "-NoHotReloadFromIDE"]))
+        run(editor_command(editor, consumer, consumer_root / "Report", target_platform))
+        check = [sys.executable, str(REPOSITORY_ROOT / "Scripts/ci/check_automation_report.py"),
+            str(consumer_root / "Report/index.json"), "--require",
+            "UnrealAI.Consumer.OptionalDependencyIsolation"]
+        if mode != "base":
+            check.extend(["--require", "UnrealAI.Auth.BuiltInProviderConfiguration"])
+        if mode == "experimental":
+            check.extend(["--require", "UnrealAI.Experimental.AuthOpenAI.ExactDeviceContractAndPendingStatuses",
+                "--require", "UnrealAI.Experimental.AuthXAI.DevicePendingSlowDownAndSuccess"])
+        run(check)
+
     contract = json.loads(SKILL_CONTRACT_PATH.read_text(encoding="utf-8"))
     report_check = [
         sys.executable,

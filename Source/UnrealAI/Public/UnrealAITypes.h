@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UnrealAIRequestLifetime.h"
 #include "UnrealAITypes.generated.h"
 
 UENUM(BlueprintType)
@@ -56,11 +57,13 @@ struct UNREALAI_API FUnrealAIRetryPolicy
 	int32 MaxRetries = 2;
 
 	/** Base delay before the first retry. Later retries use exponential backoff. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry",
+			  meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
 	float InitialDelaySeconds = 1.0f;
 
 	/** Maximum time UnrealAI is willing to wait before one retry. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry",
+			  meta = (ClampMin = "0.1", ClampMax = "3600.0", Units = "s"))
 	float MaxDelaySeconds = 60.0f;
 };
 
@@ -73,7 +76,9 @@ struct UNREALAI_API FUnrealAIRequestRetryOptions
 	EUnrealAIRetryMode Mode = EUnrealAIRetryMode::UseProviderPolicy;
 
 	/** Used only when Mode is OverrideMaxRetries. Zero disables retries for this request. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry", meta = (EditCondition = "Mode == EUnrealAIRetryMode::OverrideMaxRetries", ClampMin = "0", ClampMax = "10"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Retry",
+			  meta = (EditCondition = "Mode == EUnrealAIRetryMode::OverrideMaxRetries", ClampMin = "0",
+					  ClampMax = "10"))
 	int32 MaxRetries = 2;
 };
 
@@ -111,7 +116,9 @@ struct UNREALAI_API FUnrealAIProviderConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Authentication")
 	FString ApiKeyEnvironmentVariable = TEXT("OPENAI_API_KEY");
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Authentication", meta = (PasswordField = true))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Authentication",
+			  meta = (PasswordField = true, DeprecatedProperty,
+					  DeprecationMessage = "Use environment credentials or an injected SDK credential source."))
 	FString ApiKeyOverride;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenAI")
@@ -170,25 +177,29 @@ struct UNREALAI_API FUnrealAIChatRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling")
 	bool bUseTemperature = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling", meta = (EditCondition = "bUseTemperature", ClampMin = "0.0", ClampMax = "2.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling",
+			  meta = (EditCondition = "bUseTemperature", ClampMin = "0.0", ClampMax = "2.0"))
 	float Temperature = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling")
 	bool bUseTopP = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling", meta = (EditCondition = "bUseTopP", ClampMin = "0.0", ClampMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sampling",
+			  meta = (EditCondition = "bUseTopP", ClampMin = "0.0", ClampMax = "1.0"))
 	float TopP = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output")
 	bool bUseMaxCompletionTokens = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output", meta = (EditCondition = "bUseMaxCompletionTokens", ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output",
+			  meta = (EditCondition = "bUseMaxCompletionTokens", ClampMin = "1"))
 	int32 MaxCompletionTokens = 512;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output")
 	bool bUseLegacyMaxTokens = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output", meta = (EditCondition = "bUseLegacyMaxTokens", ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output",
+			  meta = (EditCondition = "bUseLegacyMaxTokens", ClampMin = "1"))
 	int32 MaxTokens = 512;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output", meta = (ClampMin = "1"))
@@ -205,7 +216,8 @@ struct UNREALAI_API FUnrealAIChatRequest
 	FString ResponseFormatJson;
 
 	/** Deprecated. Use StreamChatCompletion or the Stream Chat Completion Blueprint node. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streaming", meta = (DeprecatedProperty, DeprecationMessage = "Use the dedicated UnrealAI streaming API instead."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streaming",
+			  meta = (DeprecatedProperty, DeprecationMessage = "Use the dedicated UnrealAI streaming API instead."))
 	bool bStream = false;
 
 	/** Optional JSON object merged into the root request payload after standard fields are written. */
@@ -315,6 +327,9 @@ struct UNREALAI_API FUnrealAIRequestHandle
 	UPROPERTY(BlueprintReadOnly, Category = "Request")
 	FGuid Id;
 
+	/** Native observation only; intentionally excluded from serialization and Blueprint pins. */
+	TSharedPtr<const IUnrealAIRequestLifetime, ESPMode::ThreadSafe> Lifetime;
+
 	bool IsValid() const
 	{
 		return Id.IsValid();
@@ -413,11 +428,14 @@ struct UNREALAI_API FUnrealAIChatStreamResult
 	FUnrealAIError Error;
 };
 
-DECLARE_DELEGATE_TwoParams(FUnrealAIChatCompletionNativeDelegate, const FUnrealAIChatResponse& /*Response*/, const FUnrealAIError& /*Error*/);
-DECLARE_DELEGATE_OneParam(FUnrealAIRetryNativeDelegate, const FUnrealAIRetryEvent& /*Event*/);
-DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamEventNativeDelegate, const FUnrealAIChatStreamEvent& /*Event*/);
-DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamTerminalNativeDelegate, const FUnrealAIChatStreamResult& /*Result*/);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FUnrealAIChatCompletionPin, const FUnrealAIChatResponse&, Response, const FUnrealAIError&, Error);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIRetryPin, const FUnrealAIRetryEvent&, RetryEvent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamEventPin, const FUnrealAIChatStreamEvent&, Event);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamCancelledPin, const FUnrealAIChatResponse&, PartialResponse);
+DECLARE_DELEGATE_TwoParams(FUnrealAIChatCompletionNativeDelegate, const FUnrealAIChatResponse & /*Response*/,
+						   const FUnrealAIError & /*Error*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIRetryNativeDelegate, const FUnrealAIRetryEvent & /*Event*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamEventNativeDelegate, const FUnrealAIChatStreamEvent & /*Event*/);
+DECLARE_DELEGATE_OneParam(FUnrealAIChatStreamTerminalNativeDelegate, const FUnrealAIChatStreamResult & /*Result*/);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FUnrealAIChatCompletionPin, const FUnrealAIChatResponse &, Response,
+											 const FUnrealAIError &, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIRetryPin, const FUnrealAIRetryEvent &, RetryEvent);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamEventPin, const FUnrealAIChatStreamEvent &, Event);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FUnrealAIChatStreamCancelledPin, const FUnrealAIChatResponse &,
+											PartialResponse);
