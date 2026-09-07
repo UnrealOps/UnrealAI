@@ -13,6 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-platform-guards:
+    name: Windows platform guards (MSVC)
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile non-Mac branches without Apple or Unreal headers
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $compiler = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe' | Select-Object -First 1
+          if (-not $compiler) { throw 'MSVC compiler not found.' }
+          $env:CXX = $compiler
+          python -m unittest discover -s Scripts/ci/tests -p test_platform_guards.py
+
   plugin-source:
     name: Plugin source
     runs-on: ubuntu-24.04

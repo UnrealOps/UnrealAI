@@ -6,7 +6,7 @@ UnrealAI uses two CI tiers so that inexpensive checks run on every change while 
 
 ### Validate
 
-`.github/workflows/validate.yml` runs on every push and pull request using a GitHub-hosted Ubuntu runner. It:
+`.github/workflows/validate.yml` runs on every push and pull request using GitHub-hosted Ubuntu and Windows runners. The Ubuntu job:
 
 - validates `UnrealAI.uplugin`, its declared module layout, a positive integer `Version`, and a SemVer-compliant `VersionName`;
 - rejects committed Unreal-generated output, local `.env` files, common credential formats, personal filesystem paths, stale pre-rename identifiers, conflict markers, and trailing whitespace;
@@ -14,6 +14,10 @@ UnrealAI uses two CI tiers so that inexpensive checks run on every change while 
 - lints skill packaging, local links, portability, the native contract manifest, and exact synchronization of embedded compile-tested snippets;
 - lints GitHub Actions workflows with `actionlint`;
 - lints CI shell scripts with ShellCheck.
+
+The compiler regression test builds all Mac-only Objective-C++ sources as ordinary C++ with `PLATFORM_MAC=0`, using Windows, Linux, and iOS preprocessor configurations and no Apple or Unreal headers. It runs with Clang/GCC on Ubuntu and MSVC in a separate Windows job. This checks platform isolation; full Unreal builds remain in the native workflow below.
+
+Keep Apple framework imports and Objective-C syntax inside the same `PLATFORM_MAC` guard as each Mac transport implementation. A `.mm` extension alone does not exclude a file from Windows or Linux compilation. Shared Apple Keychain code uses `PLATFORM_APPLE`; optional OpenSSL code uses its module-defined availability guard.
 
 The workflow has read-only repository permissions, disables persisted checkout credentials, pins actions to full commit SHAs, and cancels superseded validation runs.
 
@@ -71,7 +75,10 @@ python3 Scripts/ci/validate_skills.py
 python3 Scripts/ci/validate_release.py
 actionlint
 python3 -m compileall -q Scripts/ci
+python3 -m unittest discover -s Scripts/ci/tests -p 'test_*.py'
 ```
+
+The platform-guard test requires Clang or GCC on the executable search path, or `CXX` set to the compiler executable. On Windows, `CXX` can point to MSVC's `cl.exe`.
 
 Native package and automation test:
 

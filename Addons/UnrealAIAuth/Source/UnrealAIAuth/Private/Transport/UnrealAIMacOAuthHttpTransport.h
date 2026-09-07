@@ -4,8 +4,10 @@
 
 #include "Transport/UnrealAIOAuthHttpTransport.h"
 
+#if PLATFORM_MAC
 namespace UE::UnrealAI::Transport::Private
 {
 TSharedRef<IUnrealAIOAuthHttpTransport, ESPMode::ThreadSafe>
 CreateMacOAuthHttpTransport(const FUnrealAIOAuthHttpTransportOptions &Options);
 }
+#endif // PLATFORM_MAC
