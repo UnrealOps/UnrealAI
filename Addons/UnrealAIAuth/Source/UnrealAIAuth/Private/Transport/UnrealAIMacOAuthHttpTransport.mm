@@ -1,5 +1,7 @@
 // Copyright UnrealOps. All Rights Reserved.
 
+#if PLATFORM_MAC
+
 // CoreServices declares its own FVector. Match Unreal's Mac system-header boundary before including Core types.
 #define FVector FVectorWorkaround
 #import <Foundation/Foundation.h>
@@ -953,3 +955,5 @@ CreateMacOAuthHttpTransport(const FUnrealAIOAuthHttpTransportOptions &Options)
 	return MakeShared<FMacAgentOAuthHttpTransport, ESPMode::ThreadSafe>(Options);
 }
 } // namespace UE::UnrealAI::Transport::Private
+
+#endif // PLATFORM_MAC

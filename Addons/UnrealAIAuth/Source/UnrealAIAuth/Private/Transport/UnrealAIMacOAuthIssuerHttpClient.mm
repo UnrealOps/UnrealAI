@@ -1,5 +1,7 @@
 // Copyright UnrealOps. All Rights Reserved.
 
+#if PLATFORM_MAC
+
 // CoreServices declares its own FVector. Match Unreal's Mac system-header boundary before including Core types.
 #define FVector FVectorWorkaround
 #import <Foundation/Foundation.h>
@@ -12,8 +14,6 @@
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeLock.h"
-
-#if PLATFORM_MAC
 
 namespace
 {
@@ -471,4 +471,4 @@ CreateAgentMacOAuthIssuerHttpClient(const FUnrealAIOAuthIssuerHttpClientOptions 
 {
 	return MakeShared<FMacOAuthIssuerHttpClient, ESPMode::ThreadSafe>(Options);
 }
-#endif
+#endif // PLATFORM_MAC
