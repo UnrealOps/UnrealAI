@@ -60,7 +60,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: UnrealAI-${{ matrix.display_name }}
-          path: ${{ runner.temp }}/UnrealAI-CI/Package
+          path: |
+            ${{ runner.temp }}/UnrealAI-CI/Package
+            ${{ runner.temp }}/UnrealAI-CI/Addons/Package
           if-no-files-found: error
           retention-days: 7
 
@@ -69,7 +71,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: UnrealAI-automation-report-${{ matrix.display_name }}
-          path: ${{ runner.temp }}/UnrealAI-CI/AutomationReport
+          path: |
+            ${{ runner.temp }}/UnrealAI-CI/AutomationReport
+            ${{ runner.temp }}/UnrealAI-CI/Consumers/*/Report
           if-no-files-found: warn
           retention-days: 7
 

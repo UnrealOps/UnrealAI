@@ -318,6 +318,8 @@ def main() -> int:
     validate_sample_project(errors)
     validate_host_project(errors)
     validate_files(files, errors)
+    from validate_sdk_boundaries import validate as validate_sdk_boundaries
+    validate_sdk_boundaries(Path(__file__).resolve().parents[2], errors)
 
     if errors:
         print("UnrealAI validation failed:", file=sys.stderr)

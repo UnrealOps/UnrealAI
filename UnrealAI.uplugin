@@ -1,22 +1,32 @@
 {
-	"FileVersion": 3,
-	"Version": 7,
-	"VersionName": "0.6.1",
-	"FriendlyName": "UnrealAI",
-	"Description": "Provider-neutral Unreal Engine SDK for OpenAI, xAI, Anthropic, Gemini, and compatible APIs.",
-	"Category": "AI",
-	"CreatedBy": "UnrealOps",
-	"DocsURL": "",
-	"MarketplaceURL": "",
-	"SupportURL": "",
-	"CanContainContent": false,
-	"Installed": false,
-	"EnabledByDefault": false,
-	"Modules": [
-		{
-			"Name": "UnrealAI",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		}
-	]
+  "FileVersion": 3,
+  "Version": 7,
+  "VersionName": "0.6.1",
+  "FriendlyName": "UnrealAI",
+  "Description": "Provider-neutral Unreal Engine SDK for OpenAI, xAI, Anthropic, Gemini, and compatible APIs.",
+  "Category": "AI",
+  "CreatedBy": "UnrealOps",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "CanContainContent": false,
+  "Installed": false,
+  "EnabledByDefault": false,
+  "Modules": [
+    {
+      "Name": "UnrealAIAccess",
+      "Type": "Runtime",
+      "LoadingPhase": "PreDefault"
+    },
+    {
+      "Name": "UnrealAITransport",
+      "Type": "Runtime",
+      "LoadingPhase": "PreDefault"
+    },
+    {
+      "Name": "UnrealAI",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
 }

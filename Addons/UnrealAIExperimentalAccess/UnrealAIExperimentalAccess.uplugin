@@ -1,0 +1,45 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "UnrealAI Experimental Access",
+  "Description": "Optional native subscription compatibility routes. Excluded from Server and Shipping builds.",
+  "Category": "AI",
+  "CreatedBy": "EngineWorks",
+  "EnabledByDefault": false,
+  "CanContainContent": false,
+  "Modules": [
+    {
+      "Name": "UnrealAIAuthOpenAI",
+      "Type": "DeveloperTool",
+      "LoadingPhase": "PostEngineInit",
+      "TargetDenyList": [
+        "Server"
+      ],
+      "TargetConfigurationDenyList": [
+        "Shipping"
+      ]
+    },
+    {
+      "Name": "UnrealAIAuthXAI",
+      "Type": "DeveloperTool",
+      "LoadingPhase": "PostEngineInit",
+      "TargetDenyList": [
+        "Server"
+      ],
+      "TargetConfigurationDenyList": [
+        "Shipping"
+      ]
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "UnrealAI",
+      "Enabled": true
+    },
+    {
+      "Name": "UnrealAIAuth",
+      "Enabled": true
+    }
+  ]
+}

@@ -1839,7 +1839,7 @@ bool FUnrealAISampleProductionDeploymentContractTest::RunTest(const FString& Par
 	TestEqual(TEXT("The backend-owned model alias is retained"), ProxyConfig.DefaultModel, FString(TEXT("game-chat")));
 	TestTrue(TEXT("The proxy requires a session token"), ProxyConfig.bRequiresApiKey);
 	TestTrue(TEXT("The proxy does not read a hosted-provider environment key"), ProxyConfig.ApiKeyEnvironmentVariable.IsEmpty());
-	TestEqual(TEXT("The short-lived session token remains in memory"), ProxyConfig.ApiKeyOverride, FString(TEXT("synthetic-short-lived-session-token")));
+	TestTrue(TEXT("Configuration inspection redacts the short-lived session token"), ProxyConfig.ApiKeyOverride.IsEmpty());
 	TestEqual(TEXT("The proxy timeout is bounded"), ProxyConfig.TimeoutSeconds, 30.0f);
 
 	FUnrealAIError ServerError;

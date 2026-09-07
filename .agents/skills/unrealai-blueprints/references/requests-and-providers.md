@@ -16,7 +16,7 @@ Expand advanced pins only when required:
 - `Additional Parameters Json` merges provider-native fields into the request root.
 - `Retry Options` inherits provider policy, disables retries, or overrides only the maximum retry count.
 
-Invalid JSON fails request construction. Prefer `Make Json Object Response Format` or `Make Strict Json Schema Response Format` for compatible OpenAI endpoints. This legacy chat surface does not normalize choice counts or tools across Anthropic/Gemini. For typed tools and structured output, use [responses-actions.md](responses-actions.md); media helpers remain deferred.
+Invalid JSON fails request construction. Prefer `Make Json Object Response Format` or `Make Strict Json Schema Response Format` for compatible OpenAI endpoints. This legacy chat surface does not normalize choice counts or tools across Anthropic/Gemini. For typed tools and structured output, use [responses-actions.md](responses-actions.md); Responses supports bounded inline PNG/JPEG parts; image capture remains application-owned.
 
 ## Select providers
 

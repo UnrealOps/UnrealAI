@@ -34,6 +34,8 @@ Load references by integration type; do not read unrelated references:
 - [references/dedicated-server-deployment.md](references/dedicated-server-deployment.md): controlled Unreal dedicated-server graphs.
 - [references/backend-deployment.md](references/backend-deployment.md): Blueprint UI calling an external game backend.
 
+The SDK extraction preserves reflected client and async node contracts. Native model providers and credential leases are not Blueprint nodes. Keep them inside a native application service; use typed Responses image parts for bounded PNG/JPEG input and let game code own scene capture.
+
 ## Choose the graph pattern
 
 - Use `Create Response (UnrealAI)` / `Stream Response (UnrealAI)` for typed tools, structured output, and continuation; follow `responses-actions.md` and handle its additional `Incomplete` terminal path.
@@ -50,14 +52,14 @@ Preserve an existing graph's architecture unless the user asks to change it.
 - Use `Get First Choice Content` and its `Has Content` output instead of assuming `Choices[0]` exists.
 - Leave `Model` empty to inherit the selected provider profile's default model.
 - Select `OpenAI`, `XAI`, `Anthropic`, or `Gemini` with the existing `Provider Name` pin/property; provider selection does not require provider-specific nodes.
-- Treat legacy response-format helpers as OpenAI-compatible chat features. Use the new Responses nodes for typed tools and structured output across adapters; media helpers remain deferred.
+- Treat legacy response-format helpers as OpenAI-compatible chat features. Use the new Responses nodes for typed tools and structured output across adapters; Responses supports bounded inline PNG/JPEG parts; image capture remains application-owned.
 - Leave the deprecated request `Stream` field disabled. Select the dedicated one-shot or streaming node instead.
 - Treat `Provider Event` raw JSON as provider-specific and potentially sensitive. Do not display or log it by default.
 - Give conversation history and request state exactly one owner. Do not let both a native base class and its Blueprint subclass append the same user or assistant turn.
 - Never edit a `.uasset` as text or call a node recipe an editor-compiled asset. Use the asset workflow when binary content must change.
 - Never put an API key in a Blueprint variable, node default, screenshot, source asset, or packaged client. Use process variables or a project-root `.env` for local editor development, and a trusted backend for shipped clients.
 - Treat a listen server as an untrusted client for credentials. Authority checks control gameplay execution but do not make a player-owned process safe for a hosted-provider key.
-- UnrealAI does not currently enforce the credential boundary or provide player authentication, authorization, moderation, quotas, or circuit breaking. Keep those decisions in trusted game/server code.
+- Shipping-client admission rejects direct provider credentials. Shared native circuit-breaker mechanisms are available; player authentication, authorization, moderation, and quotas remain in trusted game/server code.
 - Keep the graph platform-neutral. UnrealAI nodes do not require macOS-, Windows-, or Linux-specific branches.
 - Label conceptual diagrams as illustrations. Do not claim that a generated diagram is a literal Unreal Editor screenshot.
 
