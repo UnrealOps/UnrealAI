@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 #pragma once
 #include "Runtime/UnrealAIClock.h"
 #include "Misc/ScopeLock.h"

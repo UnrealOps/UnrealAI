@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 // CoreServices declares its own FVector. Match Unreal's Mac system-header boundary before including Core types.
 #define FVector FVectorWorkaround

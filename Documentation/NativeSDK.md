@@ -1,6 +1,6 @@
 # Native SDK and optional authentication
 
-UnrealAI owns model access. AutonomousAgents owns agent runs, world authority, tools and effects, budgets, memory, planning, workflows, delegation, scene observation, and movement. UnrealAI can be installed and used without AutonomousAgents.
+UnrealAI provides reusable model access. Consuming applications own agent runs, world authority, tools and effects, budgets, memory, planning, workflows, delegation, scene observation, and movement. The SDK can be installed and used independently.
 
 ## Choose an API
 
@@ -22,7 +22,7 @@ Configure an exact connection snapshot and model profiles, then inject an `IUnre
 
 `StartRequest` performs one physical model turn. It does not retry or execute tools. The caller must handle synchronous rejection before a handle is returned, ordered events after admission, and one logical terminal. Only `Completed` authorizes consuming accumulated tool calls or continuing a successful turn. Failed, cancelled, and timed-out streams do not authorize partial tool execution.
 
-Opaque continuations bind provider, alias, exact credential destination, model, original history, and expected tool-output identities. Consumption happens after physical admission. They cannot be serialized as portable memory or moved across providers. AutonomousAgents adds agent/run/world binding and validates image bytes against authorized scene observations.
+Opaque continuations bind provider, alias, exact credential destination, model, original history, and expected tool-output identities. Consumption happens after physical admission. They cannot be serialized as portable memory or moved across providers. Consumers add their own agent/run/world binding and validate image bytes against authorized scene observations.
 
 ## Lifetime and limits
 
@@ -49,10 +49,12 @@ python Scripts/install_addons.py --project /path/to/Game.uproject --experimental
 
 Packaged addons can instead be extracted directly into the project’s `Plugins` directory beside the packaged UnrealAI plugin. Enable the chosen plugin in the project. `--experimental` installs both addons. `--link` is available for development and links source inside a real sibling plugin directory; linking the entire plugin directory is unsuitable for macOS loader-relative dependencies.
 
-- **UnrealAIAuth** supplies platform secure stores, API-key provisioning, credential brokers, browser/device OAuth, refresh coordination, durable credential transactions, and account UI. API-key setup uses a queryable configured-provider catalog. Existing account IDs, store records, endpoint aliases, and token envelopes are preserved.
+- **UnrealAIAuth** supplies platform secure stores, API-key provisioning, credential brokers, browser/device OAuth, refresh coordination, durable credential transactions, and account UI. API-key setup uses a queryable configured-provider catalog. Account IDs, endpoint aliases, and token envelopes are preserved. The Mac Keychain service is `com.unrealops.unrealai`. After upgrading from a build that used a different service namespace, re-enter API keys or reconnect OAuth accounts; migration of existing credentials is manual.
 - **UnrealAIExperimentalAccess** supplies the existing restricted OpenAI/xAI subscription authentication and exact resource policies. It is disabled by default and retains Server/Shipping exclusions. It does not grant subscription entitlement or change the integrations' support status.
 
 Base interfaces remain queryable when addons are absent: the account catalog is empty, the credential factory is unavailable, and configured providers are absent. Applications may instead inject their own credential broker and register a configured provider. No UI, login, or platform store is required for that path.
+
+Custom auth providers should register through `IUnrealAIAccountAuthProvider::GetModularFeatureName()` and rebuild against this SDK so discovery uses the SDK-owned `UnrealAI.AccountAuthProvider` feature key.
 
 ## Clients and servers
 
@@ -62,4 +64,4 @@ A controlled dedicated server can supply provider credentials through an injecte
 
 ## Qualification
 
-Use the base-only, auth, and experimental consumer configurations independently. Run `UnrealAI.*` plus the relevant agent regression groups when integrating AutonomousAgents. Native platform qualification is recorded in the migration report; Mac compilation does not establish Win64/Linux transport or credential-store qualification. Live provider calls remain opt-in.
+Use the base-only, auth, and experimental consumer configurations independently. Run `UnrealAI.*` plus the consuming application’s integration tests. Native platform qualification is recorded with the build and automation reports; Mac compilation does not establish Win64/Linux transport or credential-store qualification. Live provider calls remain opt-in.

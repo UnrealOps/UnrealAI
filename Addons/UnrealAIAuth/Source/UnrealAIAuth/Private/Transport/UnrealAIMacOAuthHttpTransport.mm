@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 // CoreServices declares its own FVector. Match Unreal's Mac system-header boundary before including Core types.
 #define FVector FVectorWorkaround
@@ -373,7 +373,7 @@ FMacOAuthHttpRequestOperation::FMacOAuthHttpRequestOperation(
 	  CancellationPollSeconds(InCancellationPollSeconds), bSuspendNativeTaskForTesting(bInSuspendNativeTaskForTesting)
 {
 	CompletionQueue =
-		dispatch_queue_create("com.engineworks.autonomousagents.oauth-transport.completion", DISPATCH_QUEUE_SERIAL);
+		dispatch_queue_create("com.unrealops.unrealai.oauth-transport.completion", DISPATCH_QUEUE_SERIAL);
 }
 
 FMacOAuthHttpRequestOperation::~FMacOAuthHttpRequestOperation()
@@ -501,7 +501,7 @@ bool FMacOAuthHttpRequestOperation::PrepareNativeRequest(const TConstArrayView<u
 		}
 		Delegate->Operation = AsShared();
 		DelegateQueue.maxConcurrentOperationCount = 1;
-		DelegateQueue.name = @"com.engineworks.autonomousagents.oauth-transport.delegate";
+		DelegateQueue.name = @"com.unrealops.unrealai.oauth-transport.delegate";
 		NSURLSession *NewSession = [NSURLSession sessionWithConfiguration:Configuration
 																 delegate:Delegate
 															delegateQueue:DelegateQueue];

@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #pragma once
 
@@ -80,7 +80,7 @@ class UNREALAIAUTH_API IUnrealAIOAuthHttpSecretConsumer
 /**
  * Move-only, single-consumption wrapper around FUnrealAISecretValue. It deliberately exposes no plaintext getter.
  *
- * FUnrealAISecretValue grants this type a narrow friend relationship in AutonomousAgentsCore.
+ * FUnrealAISecretValue grants this type a narrow friend relationship in UnrealAIAccess.
  */
 class UNREALAIAUTH_API FUnrealAIOAuthHttpSecretPayload final
 {

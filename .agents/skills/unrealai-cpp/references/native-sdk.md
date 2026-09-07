@@ -10,4 +10,4 @@ The native strict transport is currently implemented for Mac; other hosts report
 
 For Shipping clients, use an explicit GatewayBearer/GatewayAccounted connection with a short-lived game credential, or the game's authenticated network service. The convenience ApiKeyOverride path is rejected in Shipping clients, including when a game session token is placed there. A boolean authority check does not establish a trusted credential store.
 
-Full ownership, installation, API, and limits are described in `Documentation/NativeSDK.md` in the plugin checkout. Agent tools, scene perception, memory, budget charging, workflows, delegation, and movement belong to AutonomousAgents or another consumer.
+Full ownership, installation, API, and limits are described in `Documentation/NativeSDK.md` in the plugin checkout. Agent tools, scene perception, memory, budget charging, workflows, delegation, and movement belong to the consuming application.

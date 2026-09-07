@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
 #include "Misc/CommandLine.h"

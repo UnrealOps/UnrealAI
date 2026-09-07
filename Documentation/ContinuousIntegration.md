@@ -103,7 +103,7 @@ Set `UNREAL_CI_OUTPUT_DIR` to an empty directory when the package and report sho
 
 ## SDK extraction and optional-plugin consumers
 
-Portable plugin validation now checks the base runtime module closure and optional addon exclusions. Shared access/auth/provider regressions live under `UnrealAI.*`; world-binding regressions remain in AutonomousAgents. The real Mac Keychain round-trip is opt-in with `-UnrealAILiveKeychain`; routine suites use offline fixtures.
+Portable plugin validation now checks the base runtime module closure and optional addon exclusions. Shared access/auth/provider regressions live under `UnrealAI.*`; world-binding regressions belong to consuming applications. The real Mac Keychain round-trip is opt-in with `-UnrealAILiveKeychain`; routine suites use offline fixtures.
 
 `run_unreal_ci.py` additionally compiles isolated base, auth, and experimental consumers. Each runs `UnrealAI.Consumer.OptionalDependencyIsolation` and the SDK fixtures available in that configuration. Optional artifacts are built with `package_with_dependencies.py`: it stages project-local dependencies and uses Unreal's `BuildPlugin.CompilePlugin` and `BuildPlugin.PackagePlugin` implementations. Each plugin gets its own compile manifest and target eligibility. Unrelated staged plugins are temporarily moved outside the host during each build because UBT validates even disabled plugins' rules. The helper restores staged inputs in a `finally` block and does not copy anything into the engine installation.
 

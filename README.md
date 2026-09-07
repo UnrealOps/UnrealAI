@@ -74,7 +74,7 @@ PrivateDependencyModuleNames.Add("UnrealAI");
 
 Use a public dependency instead if UnrealAI types appear in that module's public headers.
 
-The base SDK works independently of AutonomousAgents. For native providers, exact connection policies, secure storage, OAuth, and addon installation, see [Native SDK and optional authentication](Documentation/NativeSDK.md). Ordinary Blueprint and C++ callers can keep the quickstart below. Optional plugins live under `Addons/` in this repository and must be installed as sibling plugins with `Scripts/install_addons.py`.
+The base SDK works independently of any agent framework or consuming application. For native providers, exact connection policies, secure storage, OAuth, and addon installation, see [Native SDK and optional authentication](Documentation/NativeSDK.md). Ordinary Blueprint and C++ callers can keep the quickstart below. Optional plugins live under `Addons/` in this repository and must be installed as sibling plugins with `Scripts/install_addons.py`.
 
 ## ⚡ Quickstart
 

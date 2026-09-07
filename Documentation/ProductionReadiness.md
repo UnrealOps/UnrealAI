@@ -13,9 +13,11 @@ This document describes the SDK consolidation working tree based on version 0.6.
 | Tests and distribution | Offline regression fixtures, strict base packaging, standalone consumer preparation, source addon packaging | Exact release-commit qualification on every supported host; no release/tag created by this migration |
 | Observability | Typed usage, IDs, classified errors, retry and terminal events | Application telemetry export, cost accounting, alerting, and dashboards |
 
-The existing C++ factories and reflected Blueprint node names are preserved. The native SDK model SPI is additive; the extraction adds an UnrealAI dependency to AutonomousAgents. See [Native SDK](NativeSDK.md) for the ownership boundary and [CI](ContinuousIntegration.md) for repeatable validation.
+The existing C++ factories and reflected Blueprint node names are preserved. The native SDK model SPI is additive; consumers can integrate it without depending on any agent framework. See [Native SDK](NativeSDK.md) for the ownership boundary and [CI](ContinuousIntegration.md) for repeatable validation.
 
 The convenience HTTP service and strict native provider SPI are separate execution surfaces. The native SPI provides destination-bound, one-shot credential application and physical callback settlement. Portable convenience clients retain the existing FHttpModule path and game-thread delegate contract. Do not infer strict transport guarantees from convenience API tests.
+
+Mac credential storage uses the `com.unrealops.unrealai` Keychain service. Upgrades from a different service namespace require re-entering API keys or reconnecting OAuth accounts; existing credentials are not migrated automatically.
 
 Shipping client admission rejects direct provider keys or OAuth bearer credentials. For authenticated game clients, use a game network service or native `GatewayBearer` / `GatewayAccounted` connection. The legacy convenience `ApiKeyOverride` proxy recipe only constructs development configuration; it is rejected by Shipping-client admission. A trusted dedicated server can own hosted-provider credentials. No SDK can remove secrets already placed in a cooked asset or establish multiplayer authority by itself.
 

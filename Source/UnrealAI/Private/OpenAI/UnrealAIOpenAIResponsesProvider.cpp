@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 #include "OpenAI/UnrealAIOpenAIResponsesProvider.h"
 #include "Execution/UnrealAINativeSseModelProvider.h"
 #include "OpenAICompatible/UnrealAIOpenAICompatibleChatProtocol.h"

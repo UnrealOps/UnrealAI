@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 #include "Runtime/UnrealAIClock.h"
 #include "HAL/PlatformTime.h"
 #include "Math/NumericLimits.h"

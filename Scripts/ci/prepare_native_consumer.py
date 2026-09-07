@@ -48,11 +48,13 @@ public class UnrealAIConsumer : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "UnrealAI", "UnrealAIAccess" });
+        PrivateDependencyModuleNames.Add("Projects");
     }
 }
 ''')
     (module / "UnrealAIConsumer.cpp").write_text('''#include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "UnrealAIExecutionService.h"
 #include "Models/UnrealAIProviderCatalog.h"
 #include "Auth/UnrealAICredentialBrokerFactory.h"
@@ -62,7 +64,17 @@ IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, UnrealAIConsumer, "UnrealA
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAIConsumerIsolationTest, "UnrealAI.Consumer.OptionalDependencyIsolation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FUnrealAIConsumerIsolationTest::RunTest(const FString& Parameters)
 {
-    TestFalse(TEXT("Standalone SDK never loads the agent framework"), FModuleManager::Get().IsModuleLoaded(TEXT("AutonomousAgentsCore")));
+    const TSet<FString> ExpectedPlugins{ ''' + ', '.join('TEXT("' + name + '")' for name in names) + ''' };
+    TSet<FString> EnabledProjectPlugins;
+    for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetEnabledPlugins())
+    {
+        if (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Project)
+        {
+            EnabledProjectPlugins.Add(Plugin->GetName());
+            TestTrue(TEXT("Every enabled project plugin belongs to the selected SDK configuration"), ExpectedPlugins.Contains(Plugin->GetName()));
+        }
+    }
+    TestEqual(TEXT("The project enables exactly the selected SDK plugins"), EnabledProjectPlugins.Num(), ExpectedPlugins.Num());
     TestEqual(TEXT("Optional auth matches the selected consumer mode"), IUnrealAICredentialBrokerFactory::Get().IsValid(), ''' + ("false" if mode == "base" else "true") + ''');
     const auto Service = MakeShared<FUnrealAIExecutionService, ESPMode::ThreadSafe>();
     TestFalse(TEXT("Native convenience client starts unconfigured"), Service->IsConfigured());

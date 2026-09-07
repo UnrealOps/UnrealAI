@@ -5,7 +5,7 @@
   "FriendlyName": "UnrealAI Authentication",
   "Description": "Optional secure credential storage and account authentication for UnrealAI.",
   "Category": "AI",
-  "CreatedBy": "EngineWorks",
+  "CreatedBy": "UnrealOps",
   "EnabledByDefault": false,
   "CanContainContent": false,
   "Modules": [

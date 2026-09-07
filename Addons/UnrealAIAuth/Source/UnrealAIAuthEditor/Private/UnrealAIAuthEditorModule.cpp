@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "Modules/ModuleManager.h"
 
@@ -59,7 +59,7 @@ class FUnrealAIAuthEditorModule final : public IModuleInterface
 			return;
 		}
 		FToolMenuSection &Section =
-			Menu->FindOrAddSection(TEXT("UnrealAI"), LOCTEXT("AutonomousAgentsSection", "UnrealAI"));
+			Menu->FindOrAddSection(TEXT("UnrealAI"), LOCTEXT("UnrealAISection", "UnrealAI"));
 		Section.AddMenuEntry(TEXT("UnrealAI.Accounts"), LOCTEXT("SubscriptionAccountsMenu", "AI Accounts"),
 			LOCTEXT("SubscriptionAccountsMenuTooltip",
 					"Manage accounts provided by enabled UnrealAI authentication integrations."),

@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "OpenAI/UnrealAIOpenAICodexProviderPolicy.h"
 
@@ -45,7 +45,7 @@ bool TryBuildResponsesPolicy(FUnrealAIOpenAIResponsesProviderConfig &OutConfig, 
 	OutConfig.CredentialPresentation = EUnrealAIHttpCredentialPresentation::AuthorizationBearerWithProtectedSecondary;
 	OutConfig.ProtectedSecondaryHeaderName = TEXT("ChatGPT-Account-ID");
 	OutConfig.FixedHeaders.Add({TEXT("originator"), TEXT("codex_cli_rs")});
-	OutConfig.FixedHeaders.Add({TEXT("User-Agent"), TEXT("codex_cli_rs/0.0.0 (AutonomousAgents)")});
+	OutConfig.FixedHeaders.Add({TEXT("User-Agent"), TEXT("codex_cli_rs/0.0.0 (UnrealAI)")});
 	OutConfig.ModelProfiles.Add(OutConfig.MakeToolCapableModelProfile(TEXT("gpt-5.6")));
 
 	if (!OutConfig.ValidateShape(OutError))

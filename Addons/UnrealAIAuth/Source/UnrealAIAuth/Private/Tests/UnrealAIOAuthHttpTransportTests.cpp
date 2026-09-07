@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
 
@@ -431,7 +431,7 @@ bool FUnrealAIOAuthHttpInjectableFakeTest::RunTest(const FString &Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAIMacOAuthHttpTransportCancellationTest,
-								 "AutonomousAgents.Integration.Transport.MacOAuthCancelExactlyOnce",
+								 "UnrealAI.Transport.MacOAuthCancelExactlyOnce",
 								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FUnrealAIMacOAuthHttpTransportCancellationTest::RunTest(const FString &Parameters)
@@ -489,7 +489,7 @@ bool FUnrealAIMacOAuthHttpTransportCancellationTest::RunTest(const FString &Para
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAIMacOAuthHttpTransportTimeoutTokenTest,
-								 "AutonomousAgents.Integration.Transport.MacOAuthTimeoutTokenExactlyOnce",
+								 "UnrealAI.Transport.MacOAuthTimeoutTokenExactlyOnce",
 								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FUnrealAIMacOAuthHttpTransportTimeoutTokenTest::RunTest(const FString &Parameters)

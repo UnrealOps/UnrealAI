@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "Auth/UnrealAIMacKeychainSecretStore.h"
 
@@ -151,7 +151,7 @@ TScopedCF<CFMutableDictionaryRef> MakeBaseQuery(const FUnrealAISecretHandle &Han
 	{
 		return Query;
 	}
-	TScopedCF<CFStringRef> Service(MakeCFString(TEXT("com.engineworks.autonomousagents")));
+	TScopedCF<CFStringRef> Service(MakeCFString(TEXT("com.unrealops.unrealai")));
 	TScopedCF<CFStringRef> Account(MakeCFString(Handle.Value.ToString(EGuidFormats::Digits)));
 	if (Service.Get() == nullptr || Account.Get() == nullptr)
 	{

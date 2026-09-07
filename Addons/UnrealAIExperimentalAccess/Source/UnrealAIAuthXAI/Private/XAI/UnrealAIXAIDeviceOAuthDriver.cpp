@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "XAI/UnrealAIXAIDeviceOAuthDriver.h"
 
@@ -27,7 +27,7 @@ constexpr const TCHAR *ExactTokenEndpoint = TEXT("https://auth.x.ai/oauth2/token
 constexpr const TCHAR *ExactDeviceAuthorizationEndpoint = TEXT("https://auth.x.ai/oauth2/device/code");
 constexpr const TCHAR *VerificationOriginText = TEXT("https://accounts.x.ai");
 constexpr const TCHAR *ExactVerificationUri = TEXT("https://accounts.x.ai/oauth2/device");
-// Reviewed provider-controlled Grok public-client registration. It is not an AutonomousAgents registration.
+// Reviewed provider-controlled Grok public-client registration.
 constexpr const TCHAR *CompatibilityClientId = TEXT("b1a00492-073a-47ea-816f-4c329264a828");
 constexpr const TCHAR *CompatibilityScope = TEXT("openid profile email offline_access grok-cli:access api:access");
 constexpr const TCHAR *DeviceGrantType = TEXT("urn:ietf:params:oauth:grant-type:device_code");

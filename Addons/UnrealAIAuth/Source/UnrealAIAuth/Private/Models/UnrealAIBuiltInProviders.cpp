@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 #include "Models/UnrealAIBuiltInProviders.h"
 #include "Models/UnrealAIProviderCatalog.h"
 #include "Auth/UnrealAIEndpointProfileRegistry.h"

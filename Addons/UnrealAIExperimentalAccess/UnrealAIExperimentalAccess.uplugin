@@ -5,7 +5,7 @@
   "FriendlyName": "UnrealAI Experimental Access",
   "Description": "Optional native subscription compatibility routes. Excluded from Server and Shipping builds.",
   "Category": "AI",
-  "CreatedBy": "EngineWorks",
+  "CreatedBy": "UnrealOps",
   "EnabledByDefault": false,
   "CanContainContent": false,
   "Modules": [

@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #pragma once
 
@@ -831,7 +831,7 @@ class UNREALAIACCESS_API IUnrealAIAccountAuthProvider : public IModularFeature
 	virtual ~IUnrealAIAccountAuthProvider() = default;
 	static FName GetModularFeatureName()
 	{
-		return TEXT("AutonomousAgents.AccountAuthProvider");
+		return TEXT("UnrealAI.AccountAuthProvider");
 	}
 	virtual FName GetProviderName() const = 0;
 	virtual FUnrealAIAccountAuthCapabilities DescribeCapabilities() const = 0;

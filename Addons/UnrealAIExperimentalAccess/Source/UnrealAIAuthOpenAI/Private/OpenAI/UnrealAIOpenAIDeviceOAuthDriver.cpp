@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "OpenAI/UnrealAIOpenAIDeviceOAuthDriver.h"
 
@@ -22,7 +22,7 @@ constexpr const TCHAR *DevicePollPath = TEXT("/api/accounts/deviceauth/token");
 constexpr const TCHAR *TokenPath = TEXT("/oauth/token");
 constexpr const TCHAR *VerificationUri = TEXT("https://auth.openai.com/codex/device");
 constexpr const TCHAR *RedirectUri = TEXT("https://auth.openai.com/deviceauth/callback");
-// Reviewed provider-controlled Codex public-client registration. It is not an AutonomousAgents registration.
+// Reviewed provider-controlled Codex public-client registration.
 constexpr const TCHAR *CompatibilityClientId = TEXT("app_EMoamEEZ73f0CkXaXp7hrann");
 constexpr double MaxSingleExchangeSeconds = 30.0;
 constexpr double MaxAuthorizationSeconds = 15.0 * 60.0;

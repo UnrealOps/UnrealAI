@@ -9,6 +9,36 @@ import re
 BASE_MODULES = {"UnrealAI", "UnrealAIAccess", "UnrealAITransport"}
 ADDONS = {"UnrealAIAuth": {"UnrealAIAuth", "UnrealAIAuthEditor"},
           "UnrealAIExperimentalAccess": {"UnrealAIAuthOpenAI", "UnrealAIAuthXAI"}}
+PLUGIN_DEPENDENCIES = {"UnrealAIAuth": {"UnrealAI"},
+                      "UnrealAIExperimentalAccess": {"UnrealAI", "UnrealAIAuth"}}
+MODULE_DEPENDENCIES = {
+    "UnrealAI": {"Core", "CoreUObject", "Engine", "DeveloperSettings", "HTTP", "Json", "JsonUtilities",
+                 "UnrealAIAccess", "UnrealAITransport"},
+    "UnrealAIAccess": {"Core", "CoreUObject", "Json"},
+    "UnrealAITransport": {"Core", "HTTP", "UnrealAIAccess"},
+    "UnrealAIAuth": {"Core", "Sockets", "UnrealAI", "UnrealAIAccess", "UnrealAITransport", "OpenSSL"},
+    "UnrealAIAuthEditor": {"Core", "CoreUObject", "UnrealAIAccess", "UnrealAIAuth", "Slate", "SlateCore", "ToolMenus"},
+    "UnrealAIAuthOpenAI": {"Core", "Json", "UnrealAIAccess", "UnrealAI", "UnrealAIAuth"},
+    "UnrealAIAuthXAI": {"Core", "Json", "UnrealAIAccess", "UnrealAI", "UnrealAIAuth"},
+}
+MODULE_REFERENCE = re.compile(
+    r'(?:(?:Public|Private)(?:Dependency|IncludePath)ModuleNames|DynamicallyLoadedModuleNames)'
+    r'\s*\.\s*Add(?:Range)?\s*\((.*?)\)\s*;'
+    r'|AddEngineThirdPartyPrivateStaticDependencies\s*\((.*?)\)\s*;', re.S)
+
+
+def validate_module_dependencies(root: Path, path: Path, errors: list[str]) -> None:
+    module = path.name.removesuffix(".Build.cs")
+    if module not in MODULE_DEPENDENCIES:
+        errors.append(f"SDK contains an undeclared module: {path.relative_to(root)}")
+        return
+    source = re.sub(r'/\*.*?\*/|//[^\n]*', '', path.read_text(), flags=re.S)
+    dependencies = set()
+    for match in MODULE_REFERENCE.finditer(source):
+        dependencies.update(re.findall(r'"([^"\n]+)"', match.group(1) or match.group(2)))
+    unexpected = dependencies - MODULE_DEPENDENCIES[module]
+    if unexpected:
+        errors.append(f"SDK module has unapproved dependencies {sorted(unexpected)}: {path.relative_to(root)}")
 
 
 def validate(root: Path, errors: list[str]) -> None:
@@ -17,27 +47,24 @@ def validate(root: Path, errors: list[str]) -> None:
     if {item.get("Name") for item in modules} != BASE_MODULES or any(item.get("Type") != "Runtime" for item in modules):
         errors.append("Base SDK must contain exactly the three runtime modules.")
     if descriptor.get("Plugins"):
-        errors.append("Base SDK cannot depend on optional authentication or agent plugins.")
+        errors.append("Base SDK cannot depend on other plugins.")
     for path in (root / "Source").rglob("*.Build.cs"):
-        source = path.read_text()
-        if re.search(r'"(?:AutonomousAgents\w*|UnrealAIAuth\w*|UnrealEd|Slate|SlateCore)"', source):
-            errors.append(f"Base runtime links an optional implementation or editor module: {path.relative_to(root)}")
+        validate_module_dependencies(root, path, errors)
     for addon, expected in ADDONS.items():
         plugin = root / "Addons" / addon
         data = json.loads((plugin / f"{addon}.uplugin").read_text())
         if data.get("EnabledByDefault") is not False or {item.get("Name") for item in data["Modules"]} != expected:
             errors.append(f"Optional plugin module topology or default changed: {addon}")
+        references = data.get("Plugins", [])
+        if ({item.get("Name") for item in references} != PLUGIN_DEPENDENCIES[addon]
+                or any(item.get("Enabled") is not True for item in references)):
+            errors.append(f"Optional SDK plugin must declare only its required SDK dependencies: {addon}")
         if addon == "UnrealAIExperimentalAccess":
             for module in data["Modules"]:
                 if "Server" not in module.get("TargetDenyList", []) or "Shipping" not in module.get("TargetConfigurationDenyList", []):
                     errors.append("Experimental access must remain excluded from Server and Shipping.")
         for path in (plugin / "Source").rglob("*.Build.cs"):
-            if re.search(r'"AutonomousAgents\w*"', path.read_text()):
-                errors.append(f"Optional SDK plugin depends on the agent framework: {path.relative_to(root)}")
-    for path in (root / "Source").rglob("*.h"):
-        source = path.read_text()
-        if re.search(r'#include\s+"(?:Models/Agent|Runtime/Agent|Identity/Agent|Perception/Agent)', source):
-            errors.append(f"SDK public contract includes agent/world code: {path.relative_to(root)}")
+            validate_module_dependencies(root, path, errors)
     contracts = {
         "Source/UnrealAIAccess/Public/Auth/UnrealAIProviderAccess.h": ["FUnrealAISecretValue final", "FUnrealAICredentialDestination", "IUnrealAIRefreshableCredentialBroker"],
         "Source/UnrealAIAccess/Public/Models/UnrealAIModelTypes.h": ["MaxRetainedRequestBytes", "FUnrealAIModelRequest", "IUnrealAIModelContinuation"],

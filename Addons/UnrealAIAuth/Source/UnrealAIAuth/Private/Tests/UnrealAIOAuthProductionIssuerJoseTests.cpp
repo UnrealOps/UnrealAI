@@ -1,4 +1,4 @@
-// Copyright EngineWorks. All Rights Reserved.
+// Copyright UnrealOps. All Rights Reserved.
 
 #include "Auth/UnrealAIOAuthAuthorizationIssuerHttp.h"
 #include "Auth/UnrealAIOAuthOpenSslAuthorizationCrypto.h"
