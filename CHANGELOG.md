@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/UnrealOps/UnrealAI/compare/v0.6.0...v0.6.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **branding:** attribute plugin to UnrealOps ([#14](https://github.com/UnrealOps/UnrealAI/issues/14)) ([258c7be](https://github.com/UnrealOps/UnrealAI/commit/258c7beb466023aa0adf9d3040bb7a5e917b3bad))
+
 ## [0.6.0](https://github.com/UnrealOps/UnrealAI/compare/v0.5.0...v0.6.0) (2026-09-05)
 
 
