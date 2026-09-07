@@ -15,9 +15,9 @@ UnrealAI uses two CI tiers so that inexpensive checks run on every change while 
 - lints GitHub Actions workflows with `actionlint`;
 - lints CI shell scripts with ShellCheck.
 
-The compiler regression test builds all Mac-only Objective-C++ sources as ordinary C++ with `PLATFORM_MAC=0`, using Windows, Linux, and iOS preprocessor configurations and no Apple or Unreal headers. It runs with Clang/GCC on Ubuntu and MSVC in a separate Windows job. This checks platform isolation; full Unreal builds remain in the native workflow below.
+The compiler regression test builds all Mac-only Objective-C++ sources as ordinary C++ with `PLATFORM_MAC` both undefined and defined as `0`, using Windows, Linux, and iOS preprocessor configurations and no Apple or Unreal headers. It treats undefined-macro warnings as errors, including MSVC C4668, and runs with Clang/GCC on Ubuntu and MSVC in a separate Windows job. This checks platform isolation; full Unreal builds remain in the native workflow below.
 
-Keep Apple framework imports and Objective-C syntax inside the same `PLATFORM_MAC` guard as each Mac transport implementation. A `.mm` extension alone does not exclude a file from Windows or Linux compilation. Shared Apple Keychain code uses `PLATFORM_APPLE`; optional OpenSSL code uses its module-defined availability guard.
+Keep Apple framework imports and Objective-C syntax inside the same Mac platform guard as each transport implementation. Before Unreal headers initialize platform macros, use `#if defined(PLATFORM_MAC) && PLATFORM_MAC` so non-Mac compilers do not diagnose an undefined macro. A `.mm` extension alone does not exclude a file from Windows or Linux compilation. Shared Apple Keychain code uses `PLATFORM_APPLE`; optional OpenSSL code uses its module-defined availability guard.
 
 The workflow has read-only repository permissions, disables persisted checkout credentials, pins actions to full commit SHAs, and cancels superseded validation runs.
 

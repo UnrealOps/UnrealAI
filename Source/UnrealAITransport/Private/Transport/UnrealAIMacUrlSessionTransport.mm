@@ -1,6 +1,7 @@
 // Copyright UnrealOps. All Rights Reserved.
 
-#if PLATFORM_MAC
+// This guard precedes Unreal headers, so PLATFORM_MAC may be undefined.
+#if defined(PLATFORM_MAC) && PLATFORM_MAC
 
 // CoreServices declares its own FVector. Match Unreal's Mac system-header boundary before including Core types.
 #define FVector FVectorWorkaround
