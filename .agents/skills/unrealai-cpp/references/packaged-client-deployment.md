@@ -2,9 +2,13 @@
 
 Use this reference when UnrealAI code or UI ships in a player-controlled game process. A packaged client and listen server must call a trusted game backend or controlled dedicated server; neither may receive a long-lived hosted-provider key. Use `dedicated-server-deployment.md` or `backend-deployment.md` for those trusted runtimes.
 
-UnrealAI supplies provider request construction, HTTP transport, streaming normalization, retries, and cancellation. It does not enforce the credential boundary or provide player authentication, authorization, moderation, quotas, durable history, admission control, or circuit breaking.
+UnrealAI supplies provider request construction, HTTP transport, streaming normalization, retries, and cancellation. It bounds request admission and exposes native circuit-breaker mechanisms. Player authentication, authorization, moderation, quotas, and durable history remain application responsibilities.
 
-## Recipe: packaged client through an OpenAI-compatible proxy
+## Shipping migration
+
+The convenience `ApiKeyOverride` path below is now a development configuration example: Shipping-client admission rejects it even when the value is a game-session token. Production clients must use the game's authenticated network service or the native provider SPI with explicit `GatewayBearer` / `GatewayAccounted` connection policy. See [native SDK integration](native-sdk.md). The compile-tested sample validates configuration construction; it does not establish Shipping dispatch support for this legacy path.
+
+## Development configuration for an OpenAI-compatible proxy
 
 Use a native game service or subsystem as the only UnrealAI owner. UI and gameplay code call its sanitized methods; they do not receive `FUnrealAIProviderConfig`, credentials, authorization headers, or raw provider JSON.
 
@@ -43,6 +47,6 @@ The backend, not the client, validates the session, selects the real provider/mo
 - Exercise expired, revoked, replayed, wrong-audience, and over-budget game tokens.
 - Confirm prompts, raw responses, credentials, and provider metadata do not enter logs or crash reports.
 
-The repository's production-readiness document identifies unresolved SDK-level gates. Do not describe the SDK as enforcing a safe Shipping-client boundary until those acceptance criteria are implemented and tested.
+The repository's production-readiness document identifies unresolved SDK-level gates. Admission rejection does not remove secrets already serialized in legacy assets; inspect and migrate those assets before distributing a client.
 
 Run `Scripts/ci/run_skill_contracts.py --platform <Mac|Win64|Linux>` to compile the packaged-client helper and execute `UnrealAISample.SkillContracts.Deployment.Configuration`. Full plugin CI also requires `UnrealAI.Providers.ProtocolAdapters`, which constructs the proxy URL, bearer header, JSON body, and SSE mode in memory without a network request.

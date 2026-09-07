@@ -28,6 +28,8 @@ Copy `Plugins/UnrealAI` into the target project's `Plugins` folder, then enable 
 
 Regenerate project files if needed and rebuild. C++ consumers must add `UnrealAI` to the appropriate dependency list in their module's `.Build.cs`.
 
+See [Native SDK and optional authentication](NativeSDK.md) for `FUnrealAIExecutionService`, native model providers, limits, client/server credentials, and optional addon installation. Existing Blueprint node names and provider factories remain compatible.
+
 ## Configure providers
 
 Project Settings → Plugins → UnrealAI exposes provider profiles. A profile selects an `EUnrealAIProviderApi` protocol and supplies its base URL, default model, environment-variable names, timeout, retry policy, and optional headers.

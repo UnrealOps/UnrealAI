@@ -2,179 +2,308 @@
 
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "Misc/SecureHash.h"
+#include "Misc/Base64.h"
 #include "UnrealAIResponseJson.h"
 
 namespace UnrealAIResponseRequestPrivate
 {
-	using namespace UnrealAIResponseJson;
+using namespace UnrealAIResponseJson;
 
-	FString BaseUrl(const FUnrealAIProviderConfig& Config)
+bool WithinRequestBounds(const FUnrealAIResponseRequest &Request)
+{
+	constexpr int64 MaxBytes = 4 * 1024 * 1024;
+	if (Request.Input.Num() > 128 || Request.Tools.Num() > 128)
 	{
-		FString Url = Config.BaseUrl.TrimStartAndEnd();
-		while (Url.EndsWith(TEXT("/")))
+		return false;
+	}
+	int64 Bytes = 0;
+	auto Count = [&Bytes](const FString &Value)
+	{
+		if (Value.Len() > MaxBytes || Value.GetAllocatedSize() > static_cast<SIZE_T>(MaxBytes * 2 + 16))
 		{
-			Url.LeftChopInline(1);
+			return false;
 		}
-		return Url;
-	}
-
-	bool NativeResponses(const FUnrealAIProviderConfig& Config)
+		Bytes += FTCHARToUTF8(*Value).Length();
+		return Bytes <= MaxBytes;
+	};
+	if (!Count(Request.Instructions) || !Count(Request.Model) || !Count(Request.History.ItemsJson) ||
+		!Count(Request.AdditionalParametersJson) || !Count(Request.OutputSchemaJson))
 	{
-		return Config.ResponseApi == EUnrealAIResponseApi::OpenAIResponses
-			|| (Config.ResponseApi == EUnrealAIResponseApi::ProviderDefault
-				&& Config.Api == EUnrealAIProviderApi::OpenAICompatibleChatCompletions
-				&& Config.Name == TEXT("OpenAI")
-				&& BaseUrl(Config).Equals(TEXT("https://api.openai.com/v1"), ESearchCase::IgnoreCase));
+		return false;
 	}
-
-	bool AddInput(const FUnrealAIResponseItem& Item, const FUnrealAIResponseContext& Context,
-		FArray& Input, FUnrealAIError& Error)
+	for (const FUnrealAIToolDefinition &Tool : Request.Tools)
 	{
-		const bool bAnthropic = Context.Api == EUnrealAIProviderApi::AnthropicMessages && !Context.bNativeResponses;
-		const bool bGemini = Context.Api == EUnrealAIProviderApi::GeminiGenerateContent && !Context.bNativeResponses;
-		FObject Entry = Object();
-		if (Item.Type == EUnrealAIResponseItemType::ToolResult)
+		if (!Count(Tool.Name) || !Count(Tool.Description) || !Count(Tool.ParametersJson))
 		{
-			FString ToolOutput = Item.Output;
-			if (Item.bToolError && !bAnthropic && !bGemini)
+			return false;
+		}
+	}
+	for (const FUnrealAIResponseItem &Item : Request.Input)
+	{
+		if (Item.Content.Num() > 64 || !Count(Item.CallId) || !Count(Item.ToolName) || !Count(Item.Output) ||
+			!Count(Item.RawJson) || !Count(Item.ArgumentsJson))
+		{
+			return false;
+		}
+		for (const FUnrealAIResponsePart &Part : Item.Content)
+		{
+			if (!Count(Part.Text) || !Count(Part.RawJson) || !Count(Part.MimeType))
 			{
-				FObject Failure = Object();
-				Failure->SetStringField(TEXT("error"), Item.Output);
-				ToolOutput = Serialize(Failure);
+				return false;
 			}
-			if (Item.CallId.IsEmpty() || Item.ToolName.IsEmpty())
+			Bytes += ((static_cast<int64>(Part.ImageBytes.Num()) + 2) / 3) * 4;
+			if (Bytes > MaxBytes)
 			{
-				return Fail(Error, TEXT("Tool results require a call ID and tool name. Use MakeToolResult."));
+				return false;
 			}
-			if (Context.bNativeResponses)
+		}
+	}
+	return true;
+}
+
+FString BaseUrl(const FUnrealAIProviderConfig &Config)
+{
+	FString Url = Config.BaseUrl.TrimStartAndEnd();
+	while (Url.EndsWith(TEXT("/")))
+	{
+		Url.LeftChopInline(1);
+	}
+	return Url;
+}
+
+bool NativeResponses(const FUnrealAIProviderConfig &Config)
+{
+	return Config.ResponseApi == EUnrealAIResponseApi::OpenAIResponses ||
+		   (Config.ResponseApi == EUnrealAIResponseApi::ProviderDefault &&
+			Config.Api == EUnrealAIProviderApi::OpenAICompatibleChatCompletions &&
+			Config.Name == TEXT("OpenAI") &&
+								BaseUrl(Config).Equals(TEXT("https://api.openai.com/v1"), ESearchCase::IgnoreCase));
+}
+
+bool AddInput(const FUnrealAIResponseItem &Item, const FUnrealAIResponseContext &Context, FArray &Input,
+			  FUnrealAIError &Error)
+{
+	const bool bAnthropic = Context.Api == EUnrealAIProviderApi::AnthropicMessages && !Context.bNativeResponses;
+	const bool bGemini = Context.Api == EUnrealAIProviderApi::GeminiGenerateContent && !Context.bNativeResponses;
+	FObject Entry = Object();
+	if (Item.Type == EUnrealAIResponseItemType::ToolResult)
+	{
+		FString ToolOutput = Item.Output;
+		if (Item.bToolError && !bAnthropic && !bGemini)
+		{
+			FObject Failure = Object();
+			Failure->SetStringField(TEXT("error"), Item.Output);
+			ToolOutput = Serialize(Failure);
+		}
+		if (Item.CallId.IsEmpty() || Item.ToolName.IsEmpty())
+		{
+			return Fail(Error, TEXT("Tool results require a call ID and tool name. Use MakeToolResult."));
+		}
+		if (Context.bNativeResponses)
+		{
+			Entry->SetStringField(TEXT("type"), TEXT("function_call_output"));
+			Entry->SetStringField(TEXT("call_id"), Item.CallId);
+			Entry->SetStringField(TEXT("output"), ToolOutput);
+		}
+		else if (bAnthropic || bGemini)
+		{
+			FObject Block = Object();
+			if (bAnthropic)
 			{
-				Entry->SetStringField(TEXT("type"), TEXT("function_call_output"));
-				Entry->SetStringField(TEXT("call_id"), Item.CallId);
-				Entry->SetStringField(TEXT("output"), ToolOutput);
-			}
-			else if (bAnthropic || bGemini)
-			{
-				FObject Block = Object();
-				if (bAnthropic)
-				{
-					Block->SetStringField(TEXT("type"), TEXT("tool_result"));
-					Block->SetStringField(TEXT("tool_use_id"), Item.CallId);
-					Block->SetStringField(TEXT("content"), Item.Output);
-					Block->SetBoolField(TEXT("is_error"), Item.bToolError);
-				}
-				else
-				{
-					FObject Result = Object();
-					Result->SetStringField(TEXT("name"), Item.ToolName);
-					FObject OriginalCall = Child(Parse(Item.RawJson), TEXT("functionCall"));
-					if (!String(OriginalCall, TEXT("id")).IsEmpty())
-					{
-						Result->SetStringField(TEXT("id"), Item.CallId);
-					}
-					FObject Output = Parse(Item.Output);
-					if (!Output || Item.bToolError)
-					{
-						Output = Object();
-						Output->SetStringField(Item.bToolError ? TEXT("error") : TEXT("result"), Item.Output);
-					}
-					Result->SetObjectField(TEXT("response"), Output);
-					Block->SetObjectField(TEXT("functionResponse"), Result);
-				}
-				// Adjacent results belong to one user message (required for parallel tool use).
-				const TCHAR* PartsKey = bAnthropic ? TEXT("content") : TEXT("parts");
-				FObject Last = Input.IsEmpty() ? FObject() : AsObject(Input.Last());
-				FArray LastParts = Array(Last, PartsKey);
-				if (String(Last, TEXT("role")) == TEXT("user") && !LastParts.IsEmpty())
-				{
-					FObject First = AsObject(LastParts[0]);
-					if (String(First, TEXT("type")) == TEXT("tool_result") || Child(First, TEXT("functionResponse")))
-					{
-						LastParts.Add(Value(Block));
-						Last->SetArrayField(PartsKey, LastParts);
-						return true;
-					}
-				}
-				Entry->SetStringField(TEXT("role"), TEXT("user"));
-				Entry->SetArrayField(PartsKey, {Value(Block)});
+				Block->SetStringField(TEXT("type"), TEXT("tool_result"));
+				Block->SetStringField(TEXT("tool_use_id"), Item.CallId);
+				Block->SetStringField(TEXT("content"), Item.Output);
+				Block->SetBoolField(TEXT("is_error"), Item.bToolError);
 			}
 			else
 			{
-				Entry->SetStringField(TEXT("role"), TEXT("tool"));
-				Entry->SetStringField(TEXT("tool_call_id"), Item.CallId);
-				Entry->SetStringField(TEXT("content"), ToolOutput);
-			}
-		}
-		else if (Item.Type == EUnrealAIResponseItemType::Message)
-		{
-			if (Item.Role != EUnrealAIMessageRole::User && Item.Role != EUnrealAIMessageRole::Assistant)
-			{
-				return Fail(Error, TEXT("Response input messages use user or assistant roles. Set Instructions for system guidance."));
-			}
-			Entry->SetStringField(TEXT("role"), bGemini && Item.Role == EUnrealAIMessageRole::Assistant
-				? TEXT("model") : Role(Item.Role));
-			FArray Parts;
-			for (const FUnrealAIResponsePart& Part : Item.Content)
-			{
-				if (Part.Type != EUnrealAIResponsePartType::Text)
+				FObject Result = Object();
+				Result->SetStringField(TEXT("name"), Item.ToolName);
+				FObject OriginalCall = Child(Parse(Item.RawJson), TEXT("functionCall"));
+				if (!String(OriginalCall, TEXT("id")).IsEmpty())
 				{
-					return Fail(Error, TEXT("Only text input parts are supported. Use continuation to replay provider output."));
+					Result->SetStringField(TEXT("id"), Item.CallId);
 				}
-				FObject Block = Object();
-				if (!bGemini)
+				FObject Output = Parse(Item.Output);
+				if (!Output || Item.bToolError)
 				{
-					Block->SetStringField(TEXT("type"), Context.bNativeResponses
-						? (Item.Role == EUnrealAIMessageRole::Assistant ? TEXT("output_text") : TEXT("input_text"))
-						: TEXT("text"));
+					Output = Object();
+					Output->SetStringField(Item.bToolError ? TEXT("error") : TEXT("result"), Item.Output);
 				}
-				Block->SetStringField(TEXT("text"), Part.Text);
-				Parts.Add(Value(Block));
+				Result->SetObjectField(TEXT("response"), Output);
+				Block->SetObjectField(TEXT("functionResponse"), Result);
 			}
-			if (Parts.IsEmpty())
+			// Adjacent results belong to one user message (required for parallel tool use).
+			const TCHAR *PartsKey = bAnthropic ? TEXT("content") : TEXT("parts");
+			FObject Last = Input.IsEmpty() ? FObject() : AsObject(Input.Last());
+			FArray LastParts = Array(Last, PartsKey);
+			if (String(Last, TEXT("role")) == TEXT("user") && !LastParts.IsEmpty())
 			{
-				return Fail(Error, TEXT("A response input message must contain text parts."));
+				FObject First = AsObject(LastParts[0]);
+				if (String(First, TEXT("type")) == TEXT("tool_result") || Child(First, TEXT("functionResponse")))
+				{
+					LastParts.Add(Value(Block));
+					Last->SetArrayField(PartsKey, LastParts);
+					return true;
+				}
 			}
-			Entry->SetArrayField(bGemini ? TEXT("parts") : TEXT("content"), Parts);
+			Entry->SetStringField(TEXT("role"), TEXT("user"));
+			Entry->SetArrayField(PartsKey, {Value(Block)});
 		}
 		else
 		{
-			return Fail(Error, TEXT("Tool calls and provider data must be replayed through BuildContinuationRequest."));
+			Entry->SetStringField(TEXT("role"), TEXT("tool"));
+			Entry->SetStringField(TEXT("tool_call_id"), Item.CallId);
+			Entry->SetStringField(TEXT("content"), ToolOutput);
 		}
-		Input.Add(Value(Entry));
-		return true;
 	}
-
-	bool AddExtensions(const FString& Json, const FObject& Payload, FUnrealAIError& Error)
+	else if (Item.Type == EUnrealAIResponseItemType::Message)
 	{
-		if (Json.TrimStartAndEnd().IsEmpty())
+		if (Item.Role != EUnrealAIMessageRole::User && Item.Role != EUnrealAIMessageRole::Assistant)
 		{
-			return true;
+			return Fail(
+				Error,
+				TEXT("Response input messages use user or assistant roles. Set Instructions for system guidance."));
 		}
-		FObject Extensions = Parse(Json);
-		if (!Extensions)
+		Entry->SetStringField(TEXT("role"), bGemini && Item.Role == EUnrealAIMessageRole::Assistant ? TEXT("model")
+																									: Role(Item.Role));
+		FArray Parts;
+		for (const FUnrealAIResponsePart &Part : Item.Content)
 		{
-			return Fail(Error, TEXT("AdditionalParametersJson must be a JSON object."));
-		}
-		const TSet<FString> Reserved = {
-			TEXT("model"), TEXT("input"), TEXT("messages"), TEXT("contents"), TEXT("instructions"),
-			TEXT("system"), TEXT("systemInstruction"), TEXT("tools"), TEXT("tool_choice"), TEXT("toolConfig"),
-			TEXT("stream"), TEXT("store"), TEXT("previous_response_id"), TEXT("conversation"), TEXT("background"),
-			TEXT("text"), TEXT("response_format"), TEXT("output_config"), TEXT("generationConfig"),
-			TEXT("temperature"), TEXT("top_p"), TEXT("max_tokens"), TEXT("max_output_tokens"),
-			TEXT("max_completion_tokens"), TEXT("n"), TEXT("include")
-		};
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Extensions->Values)
-		{
-			if (Reserved.Contains(Pair.Key))
+			if (Part.Type == EUnrealAIResponsePartType::Image)
 			{
-				return Fail(Error, TEXT("AdditionalParametersJson cannot override SDK-owned request fields."));
+				constexpr int32 MaxImageBytes = 2 * 1024 * 1024;
+				const bool bPng = Part.MimeType == TEXT("image/png") && Part.ImageBytes.Num() >= 8 &&
+														Part.ImageBytes[0] == 0x89 && Part.ImageBytes[1] == 0x50 &&
+														Part.ImageBytes[2] == 0x4e && Part.ImageBytes[3] == 0x47 &&
+														Part.ImageBytes[4] == 0x0d && Part.ImageBytes[5] == 0x0a &&
+														Part.ImageBytes[6] == 0x1a && Part.ImageBytes[7] == 0x0a;
+				const bool bJpeg = Part.MimeType == TEXT("image/jpeg") && Part.ImageBytes.Num() >= 3 &&
+														 Part.ImageBytes[0] == 0xff && Part.ImageBytes[1] == 0xd8 &&
+														 Part.ImageBytes[2] == 0xff;
+				if (Item.Role != EUnrealAIMessageRole::User || Part.ImageBytes.Num() > MaxImageBytes ||
+					Part.ImageBytes.GetAllocatedSize() > static_cast<SIZE_T>(MaxImageBytes * 2) || (!bPng && !bJpeg))
+				{
+					return Fail(Error,
+								TEXT("Image input requires a user message and bounded PNG or JPEG encoded bytes."));
+				}
+				const FString Encoded = FBase64::Encode(Part.ImageBytes);
+				FObject Image = Object();
+				if (bAnthropic)
+				{
+					Image->SetStringField(TEXT("type"), TEXT("image"));
+					FObject Source = Object();
+					Source->SetStringField(TEXT("type"), TEXT("base64"));
+					Source->SetStringField(TEXT("media_type"), Part.MimeType);
+					Source->SetStringField(TEXT("data"), Encoded);
+					Image->SetObjectField(TEXT("source"), Source);
+				}
+				else if (bGemini)
+				{
+					FObject Inline = Object();
+					Inline->SetStringField(TEXT("mimeType"), Part.MimeType);
+					Inline->SetStringField(TEXT("data"), Encoded);
+					Image->SetObjectField(TEXT("inlineData"), Inline);
+				}
+				else
+				{
+					const FString Url = TEXT("data:") + Part.MimeType + TEXT(";base64,") + Encoded;
+					Image->SetStringField(TEXT("type"),
+											   Context.bNativeResponses ? TEXT("input_image") : TEXT("image_url"));
+					if (Context.bNativeResponses)
+					{
+						Image->SetStringField(TEXT("image_url"), Url);
+					}
+					else
+					{
+						FObject ImageUrl = Object();
+						ImageUrl->SetStringField(TEXT("url"), Url);
+						Image->SetObjectField(TEXT("image_url"), ImageUrl);
+					}
+				}
+				Parts.Add(Value(Image));
+				continue;
 			}
-			Payload->SetField(Pair.Key, Pair.Value);
+			if (Part.Type != EUnrealAIResponsePartType::Text)
+			{
+				return Fail(Error,
+							TEXT("Only text input parts are supported. Use continuation to replay provider output."));
+			}
+			FObject Block = Object();
+			if (!bGemini)
+			{
+				Block->SetStringField(
+					TEXT("type"), Context.bNativeResponses
+						 ? (Item.Role == EUnrealAIMessageRole::Assistant ? TEXT("output_text") : TEXT("input_text"))
+						 : TEXT("text"));
+			}
+			Block->SetStringField(TEXT("text"), Part.Text);
+			Parts.Add(Value(Block));
 		}
-		return true;
+		if (Parts.IsEmpty())
+		{
+			return Fail(Error, TEXT("A response input message must contain text parts."));
+		}
+		Entry->SetArrayField(bGemini ? TEXT("parts") : TEXT("content"), Parts);
 	}
+	else
+	{
+		return Fail(Error, TEXT("Tool calls and provider data must be replayed through BuildContinuationRequest."));
+	}
+	Input.Add(Value(Entry));
+	return true;
 }
 
-FUnrealAIResponseCapabilities UnrealAIResponseAdapters::Capabilities(const FUnrealAIProviderConfig& Config)
+bool AddExtensions(const FString &Json, const FObject &Payload, FUnrealAIError &Error)
+{
+	if (Json.TrimStartAndEnd().IsEmpty())
+	{
+		return true;
+	}
+	FObject Extensions = Parse(Json);
+	if (!Extensions)
+	{
+		return Fail(Error, TEXT("AdditionalParametersJson must be a JSON object."));
+	}
+	const TSet<FString> Reserved = {TEXT("model"),
+		TEXT("input"),
+			TEXT("messages"),
+				TEXT("contents"),
+					TEXT("instructions"),
+						TEXT("system"),
+							TEXT("systemInstruction"),
+								TEXT("tools"),
+									TEXT("tool_choice"),
+										TEXT("toolConfig"),
+											TEXT("stream"),
+												TEXT("store"),
+													TEXT("previous_response_id"),
+														TEXT("conversation"),
+															TEXT("background"),
+																TEXT("text"),
+																	TEXT("response_format"),
+																		TEXT("output_config"),
+																			TEXT("generationConfig"),
+																				TEXT("temperature"),
+																					TEXT("top_p"),
+																						TEXT("max_tokens"),
+																							TEXT("max_output_tokens"),
+																								 TEXT("max_completion_tokens"),
+																									  TEXT("n"),
+																										   TEXT("include") };
+	for (const TPair<FString, TSharedPtr<FJsonValue>> &Pair : Extensions->Values)
+	{
+		if (Reserved.Contains(Pair.Key))
+		{
+			return Fail(Error, TEXT("AdditionalParametersJson cannot override SDK-owned request fields."));
+		}
+		Payload->SetField(Pair.Key, Pair.Value);
+	}
+	return true;
+}
+} // namespace UnrealAIResponseRequestPrivate
+
+FUnrealAIResponseCapabilities UnrealAIResponseAdapters::Capabilities(const FUnrealAIProviderConfig &Config)
 {
 	FUnrealAIResponseCapabilities Result;
 	Result.bUsesOpenAIResponses = UnrealAIResponseRequestPrivate::NativeResponses(Config);
@@ -189,22 +318,28 @@ FUnrealAIResponseCapabilities UnrealAIResponseAdapters::Capabilities(const FUnre
 	return Result;
 }
 
-bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Config,
-	const FUnrealAIResponseRequest& Request, const FString& ApiKey, EUnrealAIRequestMode Mode,
-	FUnrealAIHttpRequestData& OutHttp, FUnrealAIResponseContext& OutContext, FUnrealAIError& OutError)
+bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig &Config,
+											const FUnrealAIResponseRequest &Request, const FString &ApiKey,
+											EUnrealAIRequestMode Mode, FUnrealAIHttpRequestData &OutHttp,
+											FUnrealAIResponseContext &OutContext, FUnrealAIError &OutError)
 {
 	using namespace UnrealAIResponseJson;
 	using namespace UnrealAIResponseRequestPrivate;
 	OutError = FUnrealAIError();
 	OutContext = FUnrealAIResponseContext();
+	if (!WithinRequestBounds(Request))
+	{
+		return Fail(OutError, TEXT("Response request exceeds the bounded input, tool, or payload limits."));
+	}
+
 	OutContext.Api = Config.Api;
 	OutContext.bNativeResponses = NativeResponses(Config);
 	OutContext.Model = Request.Model.IsEmpty() ? Config.DefaultModel : Request.Model;
 	OutContext.bStore = Request.bStore;
-	if (static_cast<uint8>(Config.Api) > static_cast<uint8>(EUnrealAIProviderApi::GeminiGenerateContent)
-		|| static_cast<uint8>(Config.ResponseApi) > static_cast<uint8>(EUnrealAIResponseApi::OpenAIResponses)
-		|| static_cast<uint8>(Request.ToolChoice) > static_cast<uint8>(EUnrealAIToolChoice::Named)
-		|| static_cast<uint8>(Request.OutputFormat) > static_cast<uint8>(EUnrealAIResponseFormat::JsonSchema))
+	if (static_cast<uint8>(Config.Api) > static_cast<uint8>(EUnrealAIProviderApi::GeminiGenerateContent) ||
+		static_cast<uint8>(Config.ResponseApi) > static_cast<uint8>(EUnrealAIResponseApi::OpenAIResponses) ||
+		static_cast<uint8>(Request.ToolChoice) > static_cast<uint8>(EUnrealAIToolChoice::Named) ||
+		static_cast<uint8>(Request.OutputFormat) > static_cast<uint8>(EUnrealAIResponseFormat::JsonSchema))
 	{
 		return Fail(OutError, TEXT("Invalid response configuration enum value."));
 	}
@@ -219,11 +354,11 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	{
 		return Fail(OutError, TEXT("OpenAI Responses requires an OpenAI-compatible provider configuration."));
 	}
-	OutContext.Binding = FMD5::HashAnsiString(*FString::Printf(TEXT("%s|%s|%d|%d|%s|%s|%s"),
-		*Config.Name.ToString(), *Url, static_cast<int32>(Config.Api), OutContext.bNativeResponses ? 1 : 0,
-		*OutContext.Model, *Config.OrganizationId, *Config.ProjectId));
-	if ((!Request.History.Binding.IsEmpty() && Request.History.Binding != OutContext.Binding)
-		|| (!Request.History.ItemsJson.IsEmpty() && Request.History.Binding.IsEmpty()))
+	OutContext.Binding = FMD5::HashAnsiString(*FString::Printf(
+		TEXT("%s|%s|%d|%d|%s|%s|%s"), *Config.Name.ToString(), *Url, static_cast<int32>(Config.Api),
+			 OutContext.bNativeResponses ? 1 : 0, *OutContext.Model, *Config.OrganizationId, *Config.ProjectId));
+	if ((!Request.History.Binding.IsEmpty() && Request.History.Binding != OutContext.Binding) ||
+		(!Request.History.ItemsJson.IsEmpty() && Request.History.Binding.IsEmpty()))
 	{
 		return Fail(OutError, TEXT("Continuation belongs to a different provider, protocol, or model."));
 	}
@@ -235,9 +370,9 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	{
 		return Fail(OutError, TEXT("Stored continuation requires Store and must not also replay local history."));
 	}
-	if ((Request.bUseMaxOutputTokens && Request.MaxOutputTokens < 1)
-		|| (Request.bUseTemperature && (!FMath::IsFinite(Request.Temperature) || Request.Temperature < 0.0f))
-		|| (Request.bUseTopP && (!FMath::IsFinite(Request.TopP) || Request.TopP < 0.0f || Request.TopP > 1.0f)))
+	if ((Request.bUseMaxOutputTokens && Request.MaxOutputTokens < 1) ||
+		(Request.bUseTemperature && (!FMath::IsFinite(Request.Temperature) || Request.Temperature < 0.0f)) ||
+		(Request.bUseTopP && (!FMath::IsFinite(Request.TopP) || Request.TopP < 0.0f || Request.TopP > 1.0f)))
 	{
 		return Fail(OutError, TEXT("Invalid sampling or output-token limit."));
 	}
@@ -246,7 +381,7 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	{
 		return Fail(OutError, TEXT("Invalid continuation history."));
 	}
-	for (const FUnrealAIResponseItem& Item : Request.Input)
+	for (const FUnrealAIResponseItem &Item : Request.Input)
 	{
 		if (!AddInput(Item, OutContext, Input, OutError))
 		{
@@ -267,7 +402,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	{
 		if (OutContext.bNativeResponses || bAnthropic)
 		{
-			Payload->SetStringField(OutContext.bNativeResponses ? TEXT("instructions") : TEXT("system"), Request.Instructions);
+			Payload->SetStringField(OutContext.bNativeResponses ? TEXT("instructions")
+																: TEXT("system"), Request.Instructions);
 		}
 		else if (bGemini)
 		{
@@ -285,7 +421,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 			Input.Insert(Value(Instruction), 0);
 		}
 	}
-	Payload->SetArrayField(OutContext.bNativeResponses ? TEXT("input") : (bGemini ? TEXT("contents") : TEXT("messages")), Input);
+	Payload->SetArrayField(OutContext.bNativeResponses ? TEXT("input")
+													   : (bGemini ? TEXT("contents") : TEXT("messages")), Input);
 	FObject Generation = bGemini ? Object() : Payload;
 	if (Request.bUseTemperature)
 	{
@@ -297,13 +434,16 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	}
 	if (Request.bUseMaxOutputTokens || bAnthropic)
 	{
-		Generation->SetNumberField(bGemini ? TEXT("maxOutputTokens") :
-			(bAnthropic ? TEXT("max_tokens") : (OutContext.bNativeResponses ? TEXT("max_output_tokens") : TEXT("max_completion_tokens"))),
-			Request.bUseMaxOutputTokens ? Request.MaxOutputTokens : 1024);
+		Generation->SetNumberField(
+			bGemini
+			? TEXT("maxOutputTokens")
+			: (bAnthropic ? TEXT("max_tokens")
+						  : (OutContext.bNativeResponses ? TEXT("max_output_tokens") : TEXT("max_completion_tokens"))),
+			   Request.bUseMaxOutputTokens ? Request.MaxOutputTokens : 1024);
 	}
 	TSet<FString> ToolNames;
 	FArray Tools;
-	for (const FUnrealAIToolDefinition& Tool : Request.Tools)
+	for (const FUnrealAIToolDefinition &Tool : Request.Tools)
 	{
 		FObject Schema = Parse(Tool.ParametersJson);
 		if (Tool.Name.IsEmpty() || ToolNames.Contains(Tool.Name) || !Schema)
@@ -318,7 +458,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		FObject Definition = Object();
 		Definition->SetStringField(TEXT("name"), Tool.Name);
 		Definition->SetStringField(TEXT("description"), Tool.Description);
-		Definition->SetObjectField(bAnthropic ? TEXT("input_schema") : (bGemini ? TEXT("parametersJsonSchema") : TEXT("parameters")), Schema);
+		Definition->SetObjectField(bAnthropic ? TEXT("input_schema")
+											  : (bGemini ? TEXT("parametersJsonSchema") : TEXT("parameters")), Schema);
 		if (!bGemini)
 		{
 			Definition->SetBoolField(TEXT("strict"), Tool.bStrict);
@@ -336,8 +477,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		}
 		Tools.Add(Value(Definition));
 	}
-	if ((Request.ToolChoice == EUnrealAIToolChoice::Required && Tools.IsEmpty())
-		|| (Request.ToolChoice == EUnrealAIToolChoice::Named && !ToolNames.Contains(Request.NamedTool)))
+	if ((Request.ToolChoice == EUnrealAIToolChoice::Required && Tools.IsEmpty()) ||
+		(Request.ToolChoice == EUnrealAIToolChoice::Named && !ToolNames.Contains(Request.NamedTool)))
 	{
 		return Fail(OutError, TEXT("Required or named tool selection must reference declared tools."));
 	}
@@ -357,9 +498,10 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		const bool bNamed = Request.ToolChoice == EUnrealAIToolChoice::Named;
 		if (bAnthropic)
 		{
-			Choice->SetStringField(TEXT("type"), bNamed ? TEXT("tool") :
-				(Request.ToolChoice == EUnrealAIToolChoice::Required ? TEXT("any") :
-				(Request.ToolChoice == EUnrealAIToolChoice::None ? TEXT("none") : TEXT("auto"))));
+			Choice->SetStringField(TEXT("type"), bNamed ? TEXT("tool")
+								: (Request.ToolChoice == EUnrealAIToolChoice::Required
+								   ? TEXT("any")
+								   : (Request.ToolChoice == EUnrealAIToolChoice::None ? TEXT("none") : TEXT("auto"))));
 			if (bNamed)
 			{
 				Choice->SetStringField(TEXT("name"), Request.NamedTool);
@@ -368,8 +510,10 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		}
 		else if (bGemini)
 		{
-			Choice->SetStringField(TEXT("mode"), Request.ToolChoice == EUnrealAIToolChoice::None ? TEXT("NONE") :
-				(Request.ToolChoice == EUnrealAIToolChoice::Auto ? TEXT("AUTO") : TEXT("ANY")));
+			Choice->SetStringField(
+				TEXT("mode"), Request.ToolChoice == EUnrealAIToolChoice::None
+					 ? TEXT("NONE")
+					 : (Request.ToolChoice == EUnrealAIToolChoice::Auto ? TEXT("AUTO") : TEXT("ANY")));
 			if (bNamed)
 			{
 				Choice->SetArrayField(TEXT("allowedFunctionNames"), {MakeShared<FJsonValueString>(Request.NamedTool)});
@@ -395,8 +539,10 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		}
 		else
 		{
-			Payload->SetStringField(TEXT("tool_choice"), Request.ToolChoice == EUnrealAIToolChoice::Required ? TEXT("required") :
-				(Request.ToolChoice == EUnrealAIToolChoice::None ? TEXT("none") : TEXT("auto")));
+			Payload->SetStringField(
+				TEXT("tool_choice"), Request.ToolChoice == EUnrealAIToolChoice::Required
+					 ? TEXT("required")
+					 : (Request.ToolChoice == EUnrealAIToolChoice::None ? TEXT("none") : TEXT("auto")));
 		}
 	}
 	if (Request.OutputFormat != EUnrealAIResponseFormat::Text)
@@ -405,7 +551,9 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		FObject Schema = bSchema ? Parse(Request.OutputSchemaJson) : FObject();
 		if ((bSchema && !Schema) || (!bSchema && bAnthropic))
 		{
-			return Fail(OutError, TEXT("JSON Schema requires an object schema; Anthropic does not support schema-free JSON-object mode."));
+			return Fail(
+				OutError,
+				TEXT("JSON Schema requires an object schema; Anthropic does not support schema-free JSON-object mode."));
 		}
 		FObject Format = Object();
 		Format->SetStringField(TEXT("type"), bSchema ? TEXT("json_schema") : TEXT("json_object"));
@@ -458,7 +606,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		}
 		if (!Request.bStore)
 		{
-			Payload->SetArrayField(TEXT("include"), {MakeShared<FJsonValueString>(TEXT("reasoning.encrypted_content"))});
+			Payload->SetArrayField(TEXT("include"),
+										{MakeShared<FJsonValueString>(TEXT("reasoning.encrypted_content"))});
 		}
 	}
 	if (!AddExtensions(Request.AdditionalParametersJson, Payload, OutError))
@@ -471,20 +620,23 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 	}
 	OutHttp = FUnrealAIHttpRequestData();
 	OutHttp.ResolvedModel = OutContext.Model;
-	FString Path = OutContext.bNativeResponses ? TEXT("responses") : (bAnthropic ? TEXT("messages") : TEXT("chat/completions"));
+	FString Path =
+		OutContext.bNativeResponses ? TEXT("responses") : (bAnthropic ? TEXT("messages") : TEXT("chat/completions"));
 	if (bGemini)
 	{
 		FString Model = OutContext.Model;
 		Model.RemoveFromStart(TEXT("models/"));
 		Path = FString::Printf(TEXT("models/%s:%s"), *FGenericPlatformHttp::UrlEncode(Model),
-			Mode == EUnrealAIRequestMode::Stream ? TEXT("streamGenerateContent?alt=sse") : TEXT("generateContent"));
+									Mode == EUnrealAIRequestMode::Stream ? TEXT("streamGenerateContent?alt=sse")
+																		 : TEXT("generateContent"));
 	}
 	OutHttp.Url = Url + TEXT("/") + Path;
 	OutHttp.Headers.Add(TEXT("Content-Type"), TEXT("application/json"));
 	if (!ApiKey.IsEmpty())
 	{
-		OutHttp.Headers.Add(bAnthropic ? TEXT("x-api-key") : (bGemini ? TEXT("x-goog-api-key") : TEXT("Authorization")),
-			bAnthropic || bGemini ? ApiKey : TEXT("Bearer ") + ApiKey);
+		OutHttp.Headers.Add(bAnthropic ? TEXT("x-api-key")
+									   : (bGemini ? TEXT("x-goog-api-key") : TEXT("Authorization")),
+										  bAnthropic || bGemini ? ApiKey : TEXT("Bearer ") + ApiKey);
 	}
 	if (bAnthropic)
 	{
@@ -502,7 +654,8 @@ bool UnrealAIResponseAdapters::BuildRequest(const FUnrealAIProviderConfig& Confi
 		}
 	}
 	OutHttp.Headers.Append(Config.AdditionalHeaders);
-	OutHttp.Headers.Add(TEXT("Accept"), Mode == EUnrealAIRequestMode::Stream ? TEXT("text/event-stream") : TEXT("application/json"));
+	OutHttp.Headers.Add(TEXT("Accept"), Mode == EUnrealAIRequestMode::Stream ? TEXT("text/event-stream")
+																			 : TEXT("application/json"));
 	if (Mode == EUnrealAIRequestMode::Stream)
 	{
 		OutHttp.Headers.Add(TEXT("Cache-Control"), TEXT("no-cache"));
