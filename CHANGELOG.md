@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/UnrealOps/UnrealAI/compare/v0.7.1...v0.7.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **transport:** handle undefined Mac platform macros ([a044bf6](https://github.com/UnrealOps/UnrealAI/commit/a044bf67e62d92987e7c48479c01200ac8b9c024))
+
 ## [0.7.1](https://github.com/UnrealOps/UnrealAI/compare/v0.7.0...v0.7.1) (2026-09-07)
 
 
