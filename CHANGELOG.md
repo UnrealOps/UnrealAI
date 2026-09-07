@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/UnrealOps/UnrealAI/compare/v0.6.1...v0.7.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** Configuration getters redact credentials, and Shipping clients reject direct provider credentials and legacy ApiKeyOverride. Route shipped clients through a trusted backend or an explicit native gateway connection. Mac credentials use the com.unrealops.unrealai Keychain service and require re-entry or reconnection after upgrading from an earlier namespace. Custom authentication integrations must rebuild and register with IUnrealAIAccountAuthProvider::GetModularFeatureName() for UnrealAI.AccountAuthProvider.
+
+### Features
+
+* **sdk:** add native model access and optional authentication ([abaca26](https://github.com/UnrealOps/UnrealAI/commit/abaca26ba8975f608601bf391d93c6d8c8aad515))
+
 ## [0.6.1](https://github.com/UnrealOps/UnrealAI/compare/v0.6.0...v0.6.1) (2026-09-07)
 
 
