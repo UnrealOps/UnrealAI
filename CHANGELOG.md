@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/UnrealOps/UnrealAI/compare/v0.7.0...v0.7.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **transport:** guard Mac sources on Windows and Linux ([d22cf5d](https://github.com/UnrealOps/UnrealAI/commit/d22cf5dfc237f838e02ee0a69c67340d9adc2b61))
+
 ## [0.7.0](https://github.com/UnrealOps/UnrealAI/compare/v0.6.1...v0.7.0) (2026-09-07)
 
 
