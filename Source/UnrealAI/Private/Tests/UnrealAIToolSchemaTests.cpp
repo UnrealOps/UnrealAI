@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 #include "OpenAI/UnrealAIOpenAIResponsesProtocol.h"
 #include "OpenAI/UnrealAIOpenAIToolSchema.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
