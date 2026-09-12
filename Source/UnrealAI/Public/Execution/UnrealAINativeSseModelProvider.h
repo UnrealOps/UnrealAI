@@ -78,6 +78,8 @@ struct UNREALAI_API FUnrealAINativeSseModelProviderConfig final
 	FName ErrorCodePrefix;
 	EUnrealAIErrorCategory ForbiddenErrorCategory = EUnrealAIErrorCategory::NotAuthorized;
 	int32 MaximumActiveRequests = 64;
+	/** An absent Content-Type may reach the bounded SSE decoder; explicit incompatible types remain rejected. */
+	bool bAllowMissingResponseContentType = false;
 #if WITH_DEV_AUTOMATION_TESTS || WITH_PERF_AUTOMATION_TESTS
 	bool bDrainEventsSynchronouslyForTesting = false;
 	TFunction<void()> BeforeFirstDrainForTesting;

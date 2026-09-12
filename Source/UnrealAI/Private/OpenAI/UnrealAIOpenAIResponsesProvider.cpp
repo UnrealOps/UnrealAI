@@ -160,6 +160,7 @@ bool FUnrealAIOpenAIResponsesProviderConfig::ValidateShape(FString &OutError) co
 		  DefaultMaximumInputMessages < 1 || DefaultMaximumInputMessages > FUnrealAIModelRequest::MaxInputMessages ||
 		  DefaultMaximumOutputTokens < 1 || DefaultMaximumOutputTokens > FUnrealAIModelRequest::MaxOutputTokensLimit ||
 		  ModelProfiles.Num() > MaxModelProfiles || (bRequireConfiguredModelProfile && ModelProfiles.IsEmpty()) ||
+		  (bUseChatCompletions && !bSendMaxOutputTokens) ||
 		  UnauthorizedErrorCode.IsNone() || ForbiddenErrorCode.IsNone() ||
 #if WITH_DEV_AUTOMATION_TESTS || WITH_PERF_AUTOMATION_TESTS
 		  MaximumActiveRequestsForTesting < 1 || MaximumActiveRequestsForTesting > MaxActiveProviderRequests ||
@@ -329,8 +330,8 @@ class FDecoder final : public IUnrealAINativeSseDecoder
   public:
 	FDecoder(FName ProviderName, const FUnrealAIOpenAIResponsesPublicFaultPolicy &FaultPolicy,
 			 const FUnrealAIModelRequest &Request, IUnrealAINativeSseProtocol::FEventSink Sink,
-			 IUnrealAINativeSseProtocol::FIgnoredEventObserver Ignored, bool bCompatible)
-		: Responses(ProviderName, FaultPolicy, Request, MoveTemp(Sink), MoveTemp(Ignored))
+			 IUnrealAINativeSseProtocol::FIgnoredEventObserver Ignored, bool bCompatible, bool bAllowEmptyTerminalOutput)
+		: Responses(ProviderName, FaultPolicy, Request, MoveTemp(Sink), MoveTemp(Ignored), bAllowEmptyTerminalOutput)
 	{
 		if (bCompatible)
 		{
@@ -392,7 +393,8 @@ class FProtocol final : public IUnrealAINativeSseProtocol
   public:
 	explicit FProtocol(const FUnrealAIOpenAIResponsesProviderConfig &Config)
 		: ProviderName(Config.ProviderName), FaultPolicy(Config.PublicFaultPolicy),
-		  bCompatible(Config.bUseChatCompletions)
+		  bCompatible(Config.bUseChatCompletions), bSendMaxOutputTokens(Config.bSendMaxOutputTokens),
+		  bAllowEmptyTerminalOutput(Config.bAllowEmptyTerminalOutput)
 	{
 	}
 	FName GetProviderName() const override
@@ -414,7 +416,7 @@ class FProtocol final : public IUnrealAINativeSseProtocol
 		FUnrealAIOpenAIResponsesWireRequest Wire;
 		FUnrealAIOpenAIResponsesContinuationCommit Commit;
 		if (!FUnrealAIOpenAIResponsesRequestBuilder::StageForProvider(ProviderName, FaultPolicy, Request, Wire, Commit,
-																	  OutError))
+																	  OutError, bSendMaxOutputTokens))
 		{
 			return false;
 		}
@@ -442,13 +444,16 @@ class FProtocol final : public IUnrealAINativeSseProtocol
 	TUniquePtr<IUnrealAINativeSseDecoder> CreateDecoder(const FUnrealAIModelRequest &Request, FEventSink Sink,
 														FIgnoredEventObserver Ignored) const override
 	{
-		return MakeUnique<FDecoder>(ProviderName, FaultPolicy, Request, MoveTemp(Sink), MoveTemp(Ignored), bCompatible);
+			return MakeUnique<FDecoder>(ProviderName, FaultPolicy, Request, MoveTemp(Sink), MoveTemp(Ignored), bCompatible,
+				bAllowEmptyTerminalOutput);
 	}
 
   private:
 	FName ProviderName;
 	FUnrealAIOpenAIResponsesPublicFaultPolicy FaultPolicy;
 	bool bCompatible = false;
+	bool bSendMaxOutputTokens = true;
+	bool bAllowEmptyTerminalOutput = false;
 };
 } // namespace UE::UnrealAI::Responses::Private
 
@@ -570,6 +575,7 @@ class FUnrealAIOpenAIResponsesProvider::FState final
 					MakeShared<UE::UnrealAI::Responses::Private::FProtocol, ESPMode::ThreadSafe>(Config);
 				NativeConfig.ErrorCodePrefix = Config.PublicFaultPolicy.CodePrefix;
 				NativeConfig.MaximumPendingHttpEvents = Config.bUseChatCompletions ? 256 : 1024;
+				NativeConfig.bAllowMissingResponseContentType = Config.bAllowMissingResponseContentType;
 				NativeConfig.MapPublicError =
 					[Policy = Config.PublicFaultPolicy, bChat = Config.bUseChatCompletions](FUnrealAIModelError &Error)
 				{

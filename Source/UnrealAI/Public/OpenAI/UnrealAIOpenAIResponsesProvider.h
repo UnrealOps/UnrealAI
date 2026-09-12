@@ -47,6 +47,16 @@ struct UNREALAI_API FUnrealAIOpenAIResponsesProviderConfig final
 	bool bRequireConfiguredModelProfile = false;
 	/** Uses the same native execution path with the conservative Chat Completions codec. */
 	bool bUseChatCompletions = false;
+	/**
+	 * Sends the Responses max_output_tokens field. Disable only for an endpoint that rejects it.
+	 * Such endpoints control generation length; request deadlines and local stream bounds still apply.
+	 * Chat Completions requires this to remain enabled for its token-limit conversion.
+	 */
+	bool bSendMaxOutputTokens = true;
+	/** Explicit compatibility for endpoints that omit Content-Type. Explicit non-SSE types still fail. */
+	bool bAllowMissingResponseContentType = false;
+	/** Allows a metadata-only completion with output:[] after complete streamed output items. */
+	bool bAllowEmptyTerminalOutput = false;
 #if WITH_DEV_AUTOMATION_TESTS || WITH_PERF_AUTOMATION_TESTS
 	/** Deterministic adapter-lifetime seam; production drains always use the bounded worker path. */
 	bool bDrainEventsSynchronouslyForTesting = false;
