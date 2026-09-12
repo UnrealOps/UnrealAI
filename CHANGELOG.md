@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/UnrealOps/UnrealAI/compare/v0.7.3...v0.7.4) (2026-09-12)
+
+
+### Bug Fixes
+
+* **packaging:** include condensed JSON policy in tool schema tests ([#25](https://github.com/UnrealOps/UnrealAI/issues/25)) ([40d4ccb](https://github.com/UnrealOps/UnrealAI/commit/40d4ccb8caf41017838843e6bd71d41be2dccced))
+
 ## [0.7.3](https://github.com/UnrealOps/UnrealAI/compare/v0.7.2...v0.7.3) (2026-09-12)
 
 
