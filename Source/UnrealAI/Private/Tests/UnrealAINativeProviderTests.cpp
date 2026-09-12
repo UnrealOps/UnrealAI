@@ -5,7 +5,10 @@
 #include "Auth/UnrealAIEndpointProfileRegistry.h"
 #include "OpenAI/UnrealAIOpenAIResponsesProvider.h"
 #include "Runtime/UnrealAIPhysicalRequestBudget.h"
+#include "Runtime/UnrealAIFailureClassification.h"
 #include "Runtime/UnrealAIProviderReliability.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Testing/UnrealAITestClock.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -56,6 +59,7 @@ class FNativeFixtureTransport final : public IUnrealAIHttpTransport
 	{
 		TSharedPtr<IUnrealAIHttpEventSink, ESPMode::ThreadSafe> Sink;
 		TSharedPtr<FNativeFixtureHandle, ESPMode::ThreadSafe> Handle;
+		TArray<uint8> BodyUtf8;
 		uint64 Sequence = 0;
 	};
 	bool StartRequest(const FUnrealAIHttpRequest &Request,
@@ -73,6 +77,7 @@ class FNativeFixtureTransport final : public IUnrealAIHttpTransport
 		FAttempt Attempt;
 		Attempt.Sink = Sink;
 		Attempt.Handle = MakeShared<FNativeFixtureHandle, ESPMode::ThreadSafe>(Request.RequestId);
+		Attempt.BodyUtf8 = Request.Body;
 		OutHandle = Attempt.Handle;
 		Attempts.Add(MoveTemp(Attempt));
 		return true;
@@ -93,6 +98,34 @@ class FNativeFixtureTransport final : public IUnrealAIHttpTransport
 		Event.Error.UserMessage = FText::FromString(TEXT("Cancelled."));
 		const auto Sink = MoveTemp(Attempt.Sink);
 		Sink->EnqueueHttpEvent(MoveTemp(Event));
+	}
+	void RejectHttp(int32 Index, int32 StatusCode, const FString &Body)
+	{
+		Respond(Index, StatusCode, TEXT("application/json"), Body);
+	}
+	void Respond(int32 Index, int32 StatusCode, const FString &ContentType, const FString &Body)
+	{
+		FAttempt &Attempt = Attempts[Index];
+		const TSharedPtr<IUnrealAIHttpEventSink, ESPMode::ThreadSafe> Sink = MoveTemp(Attempt.Sink);
+		FUnrealAIHttpEvent Started;
+		Started.RequestId = Attempt.Handle->Id;
+		Started.Sequence = ++Attempt.Sequence;
+		Started.Kind = EUnrealAIHttpEventKind::ResponseStarted;
+		Started.Response.StatusCode = StatusCode;
+		Started.Response.ContentType = ContentType;
+		Sink->EnqueueHttpEvent(MoveTemp(Started));
+		FUnrealAIHttpEvent Chunk;
+		Chunk.RequestId = Attempt.Handle->Id;
+		Chunk.Sequence = ++Attempt.Sequence;
+		Chunk.Kind = EUnrealAIHttpEventKind::BodyChunk;
+		FTCHARToUTF8 Utf8(*Body);
+		Chunk.BodyChunk.Append(reinterpret_cast<const uint8 *>(Utf8.Get()), Utf8.Length());
+		Sink->EnqueueHttpEvent(MoveTemp(Chunk));
+		FUnrealAIHttpEvent Completed;
+		Completed.RequestId = Attempt.Handle->Id;
+		Completed.Sequence = ++Attempt.Sequence;
+		Completed.Kind = EUnrealAIHttpEventKind::Completed;
+		Sink->EnqueueHttpEvent(MoveTemp(Completed));
 	}
 	void BeginShutdown() override
 	{
@@ -152,6 +185,195 @@ TSharedRef<const FUnrealAIConnectionRegistrySnapshot, ESPMode::ThreadSafe> Nativ
 	return Connections.CreateSnapshot();
 }
 } // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAINativeContentTypePolicyTest, "UnrealAI.Native.MissingContentTypePolicy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FUnrealAINativeContentTypePolicyTest::RunTest(const FString &)
+{
+	struct FCase
+	{
+		const TCHAR *ContentType;
+		bool bAllowMissing;
+		bool bValidStream;
+		bool bSuccess;
+	};
+	const FCase Cases[] = {{TEXT("text/event-stream"), false, true, true}, {TEXT(""), false, true, false},
+		{TEXT(""), true, true, true}, {TEXT("application/json"), true, true, false},
+		{TEXT("text/html"), true, true, false}, {TEXT(""), true, false, false}};
+	for (const FCase &Case : Cases)
+	{
+		const TSharedRef<FNativeFixtureTransport, ESPMode::ThreadSafe> Transport =
+			MakeShared<FNativeFixtureTransport, ESPMode::ThreadSafe>();
+		FUnrealAIOpenAIResponsesProviderConfig Config = FUnrealAIOpenAIResponsesProviderConfig::OpenAIPlatformApiKey();
+		TestFalse(TEXT("Public API requires a media header by default"), Config.bAllowMissingResponseContentType);
+		Config.bDrainEventsSynchronouslyForTesting = true;
+		Config.bAllowMissingResponseContentType = Case.bAllowMissing;
+		FUnrealAIOpenAIResponsesProvider Provider(NativeFixtureConnections(), Transport, Config);
+		FUnrealAIModelRequest Request;
+		Request.RequestId.Value = FGuid::NewGuid();
+		Request.ConnectionAlias = TEXT("tests.sdk.connection");
+		Request.ModelId = Config.ModelProfiles[0].ModelId;
+		FUnrealAIModelMessage Message;
+		FUnrealAIModelContentPart Part;
+		Part.Text = TEXT("Offline content-type fixture.");
+		Message.Content.Add(MoveTemp(Part));
+		Request.InputMessages.Add(MoveTemp(Message));
+		const TSharedRef<FNativeFixtureSink, ESPMode::ThreadSafe> Sink =
+			MakeShared<FNativeFixtureSink, ESPMode::ThreadSafe>();
+		TSharedPtr<IUnrealAIModelRequestHandle, ESPMode::ThreadSafe> Handle;
+		FUnrealAIModelError Error;
+		FUnrealAICancellationSource Cancellation;
+		if (!TestTrue(TEXT("Media-header fixture admitted"), Provider.StartRequest(Request,
+			MakeShared<FNativeFixtureAccess, ESPMode::ThreadSafe>(), Sink, Cancellation.GetToken(), Handle, Error)))
+		{
+			return false;
+		}
+		const FString Stream = TEXT("data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_media\"}}\n\n")
+			TEXT("data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_media\",\"output\":[{\"type\":\"message\",\"id\":\"msg_media\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n");
+		Transport->Respond(0, 200, Case.ContentType, Case.bValidStream ? Stream : TEXT("{\"not\":\"an SSE stream\"}"));
+		const TArray<FUnrealAIModelEvent> Terminals = Sink->Events.FilterByPredicate(
+			[](const FUnrealAIModelEvent &Event) { return Event.IsTerminal(); });
+		TestEqual(TEXT("Exactly one media-policy terminal"), Terminals.Num(), 1);
+		if (Terminals.Num() == 1)
+		{
+			TestEqual(TEXT("Only allowed, valid SSE completes"),
+				Terminals[0].Kind == EUnrealAIModelEventKind::Completed, Case.bSuccess);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAINativeOutputTokenPolicyTest, "UnrealAI.Native.EndpointOutputTokenPolicy",
+								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FUnrealAINativeOutputTokenPolicyTest::RunTest(const FString &)
+{
+	for (const bool bSendLimit : {true, false})
+	{
+		const TSharedRef<FNativeFixtureTransport, ESPMode::ThreadSafe> Transport =
+			MakeShared<FNativeFixtureTransport, ESPMode::ThreadSafe>();
+		FUnrealAIOpenAIResponsesProviderConfig Config = FUnrealAIOpenAIResponsesProviderConfig::OpenAIPlatformApiKey();
+		TestTrue(TEXT("Public API sends token limit by default"), Config.bSendMaxOutputTokens);
+		Config.bDrainEventsSynchronouslyForTesting = true;
+		Config.bSendMaxOutputTokens = bSendLimit;
+		FUnrealAIOpenAIResponsesProvider Provider(NativeFixtureConnections(), Transport, Config);
+		FUnrealAIModelRequest Request;
+		Request.RequestId.Value = FGuid::NewGuid();
+		Request.ConnectionAlias = TEXT("tests.sdk.connection");
+		Request.ModelId = Config.ModelProfiles[0].ModelId;
+		Request.MaxOutputTokens = 512;
+		FUnrealAIModelMessage Message;
+		FUnrealAIModelContentPart Part;
+		Part.Text = TEXT("Offline endpoint wire policy fixture.");
+		Message.Content.Add(MoveTemp(Part));
+		Request.InputMessages.Add(MoveTemp(Message));
+		const TSharedRef<FNativeFixtureSink, ESPMode::ThreadSafe> Sink =
+			MakeShared<FNativeFixtureSink, ESPMode::ThreadSafe>();
+		TSharedPtr<IUnrealAIModelRequestHandle, ESPMode::ThreadSafe> Handle;
+		FUnrealAIModelError Error;
+		FUnrealAICancellationSource Cancellation;
+		if (!TestTrue(TEXT("Endpoint policy request admitted"), Provider.StartRequest(Request,
+			MakeShared<FNativeFixtureAccess, ESPMode::ThreadSafe>(), Sink, Cancellation.GetToken(), Handle, Error)))
+		{
+			return false;
+		}
+		const TArray<uint8> &Body = Transport->Attempts[0].BodyUtf8;
+		const FUTF8ToTCHAR Decoded(reinterpret_cast<const ANSICHAR *>(Body.GetData()), Body.Num());
+		const FString Json(Decoded.Length(), Decoded.Get());
+		TSharedPtr<FJsonObject> Root;
+		if (!TestTrue(TEXT("Transport receives valid JSON"),
+			FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) && Root.IsValid()))
+		{
+			return false;
+		}
+		TestEqual(TEXT("Endpoint policy controls the token-limit field"), Root->HasField(TEXT("max_output_tokens")), bSendLimit);
+		if (bSendLimit)
+		{
+			TestEqual(TEXT("Requested token limit is preserved"), Root->GetIntegerField(TEXT("max_output_tokens")), 512);
+		}
+		TestTrue(TEXT("Streaming remains enabled"), Root->GetBoolField(TEXT("stream")));
+		TestFalse(TEXT("Storage remains disabled"), Root->GetBoolField(TEXT("store")));
+		TestTrue(TEXT("Stateless reasoning continuity remains requested"), Root->HasField(TEXT("include")));
+		Handle->Cancel();
+		Transport->Settle(0);
+		Config.bUseChatCompletions = true;
+		FString ShapeError;
+		TestEqual(TEXT("Chat conversion requires its token-limit input"), Config.ValidateShape(ShapeError), bSendLimit);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAINativeHttpStatusTest, "UnrealAI.Native.HttpStatusWithoutResponseDisclosure",
+								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FUnrealAINativeHttpStatusTest::RunTest(const FString &)
+{
+	for (const int32 Status : {400, 401, 403, 429, 500})
+	{
+		const TSharedRef<FNativeFixtureTransport, ESPMode::ThreadSafe> Transport =
+			MakeShared<FNativeFixtureTransport, ESPMode::ThreadSafe>();
+		FUnrealAIOpenAIResponsesProviderConfig Config = FUnrealAIOpenAIResponsesProviderConfig::OpenAIPlatformApiKey();
+		Config.bDrainEventsSynchronouslyForTesting = true;
+		FUnrealAIOpenAIResponsesProvider Provider(NativeFixtureConnections(), Transport, Config);
+		FUnrealAIModelRequest Request;
+		Request.RequestId.Value = FGuid::NewGuid();
+		Request.ConnectionAlias = TEXT("tests.sdk.connection");
+		Request.ModelId = Config.ModelProfiles[0].ModelId;
+		FUnrealAIModelMessage Message;
+		FUnrealAIModelContentPart Part;
+		Part.Text = TEXT("Offline HTTP diagnostics fixture.");
+		Message.Content.Add(MoveTemp(Part));
+		Request.InputMessages.Add(MoveTemp(Message));
+		const TSharedRef<FNativeFixtureSink, ESPMode::ThreadSafe> Sink =
+			MakeShared<FNativeFixtureSink, ESPMode::ThreadSafe>();
+		TSharedPtr<IUnrealAIModelRequestHandle, ESPMode::ThreadSafe> Handle;
+		FUnrealAIModelError Error;
+		FUnrealAICancellationSource Cancellation;
+		if (!TestTrue(TEXT("HTTP fixture admitted"), Provider.StartRequest(Request,
+			MakeShared<FNativeFixtureAccess, ESPMode::ThreadSafe>(), Sink, Cancellation.GetToken(), Handle, Error)))
+		{
+			return false;
+		}
+		Transport->RejectHttp(0, Status, TEXT("{\"error\":{\"message\":\"private fixture content\"}}"));
+		const TArray<FUnrealAIModelEvent> Terminals = Sink->Events.FilterByPredicate(
+			[](const FUnrealAIModelEvent &Event) { return Event.IsTerminal(); });
+		TestEqual(TEXT("One HTTP terminal"), Terminals.Num(), 1);
+		if (Terminals.Num() == 1)
+		{
+			TestEqual(TEXT("Rejected request fails"), Terminals[0].Kind, EUnrealAIModelEventKind::Failed);
+			const FUnrealAIModelError &Failure = Terminals[0].Error;
+			TestTrue(TEXT("Numeric HTTP status survives public presentation"),
+				Failure.UserMessage.ToString().Contains(FString::FromInt(Status)));
+			TestFalse(TEXT("Response body is not presented"),
+				Failure.UserMessage.ToString().Contains(TEXT("private fixture content")));
+			TestFalse(TEXT("Response body is not retained in diagnostics"),
+				Failure.DiagnosticMessage.Contains(TEXT("private fixture content")));
+			TestEqual(TEXT("Original numeric metadata retained"),
+				Failure.Metadata.FindRef(TEXT("http_status")), FString::FromInt(Status));
+		}
+	}
+	const auto Summary = [](const FString &Json)
+	{
+		const FTCHARToUTF8 Utf8(*Json);
+		return UE::UnrealAI::Reliability::GetPublicHttpFailureSummary(
+			MakeArrayView(reinterpret_cast<const uint8 *>(Utf8.Get()), Utf8.Length()));
+	};
+	TestEqual(TEXT("Known rejected parameter has a fixed public description"),
+		Summary(TEXT("{\"detail\":\"Unsupported parameter: max_output_tokens\",\"other\":\"private fixture content\"}")),
+		FString(TEXT("Unsupported request parameter: max_output_tokens.")));
+	TestEqual(TEXT("String error envelope has the same fixed description"),
+		Summary(TEXT("{\"error\":\"Unsupported parameter: 'max_output_tokens'\"}")),
+		FString(TEXT("Unsupported request parameter: max_output_tokens.")));
+	TestEqual(TEXT("Unsupported subscription model is explained without echoing its name"),
+		Summary(TEXT("{\"detail\":\"The 'private-fixture-model' model is not supported when using Codex with a ChatGPT account.\"}")),
+		FString(TEXT("The selected model is unavailable for this connection.")));
+	TestTrue(TEXT("Unknown provider prose is not surfaced"),
+		Summary(TEXT("{\"error\":{\"message\":\"private fixture content\"}}")).IsEmpty());
+	TestTrue(TEXT("Unknown parameter names are not surfaced"),
+		Summary(TEXT("{\"error\":{\"code\":\"unsupported_parameter\",\"param\":\"private_fixture_content\"}}")).IsEmpty());
+	TestTrue(TEXT("Malformed JSON is not summarized"), Summary(TEXT("{not json")).IsEmpty());
+	TestTrue(TEXT("Duplicate keys cannot select a public explanation"),
+		Summary(TEXT("{\"detail\":\"Unsupported parameter: max_output_tokens\",\"detail\":\"private fixture content\"}")).IsEmpty());
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAINativeCancellationTest, "UnrealAI.Native.CancellationAndPhysicalCapacity",
 								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -329,6 +551,103 @@ bool FUnrealAIGatewayPolicyTest::RunTest(const FString &)
 	TestTrue(TEXT("An explicit destination-bound gateway policy validates"), Config.ValidateShape(Error));
 	Config.BillingMode = EUnrealAIBillingMode::ApiMetered;
 	TestFalse(TEXT("Gateway access cannot impersonate provider billing"), Config.ValidateShape(Error));
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealAINativeMultiTurnHistoryTest, "UnrealAI.Native.MultiTurnToolHistory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FUnrealAINativeMultiTurnHistoryTest::RunTest(const FString &)
+{
+	for (const bool bMetadataOnly : {false, true})
+	{
+		const auto Transport = MakeShared<FNativeFixtureTransport, ESPMode::ThreadSafe>();
+		FUnrealAIOpenAIResponsesProviderConfig Config = FUnrealAIOpenAIResponsesProviderConfig::OpenAIPlatformApiKey();
+		Config.bDrainEventsSynchronouslyForTesting = true;
+		Config.bAllowEmptyTerminalOutput = bMetadataOnly;
+		FUnrealAIOpenAIResponsesProvider Provider(NativeFixtureConnections(), Transport, Config);
+		FUnrealAIModelRequest Request;
+		Request.ConnectionAlias = TEXT("tests.sdk.connection");
+		Request.ModelId = Config.ModelProfiles[0].ModelId;
+		FUnrealAIModelMessage Message;
+		FUnrealAIModelContentPart Part;
+		Part.Text = TEXT("Retain every offline tool exchange.");
+		Message.Content.Add(Part);
+		Request.InputMessages.Add(Message);
+		FUnrealAIModelToolDescriptor Tool;
+		Tool.StableName = TEXT("tests.echo");
+		Tool.InvocationName = TEXT("echo_v1");
+		Tool.Description = TEXT("Offline history fixture.");
+		Tool.InputJsonSchema = TEXT("{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}");
+		Request.Tools.Add(Tool);
+		for (int32 Turn = 0; Turn < 3; ++Turn)
+		{
+			Request.RequestId.Value = FGuid::NewGuid();
+			const auto Sink = MakeShared<FNativeFixtureSink, ESPMode::ThreadSafe>();
+			TSharedPtr<IUnrealAIModelRequestHandle, ESPMode::ThreadSafe> Handle;
+			FUnrealAIModelError Error;
+			FUnrealAICancellationSource Cancellation;
+			const auto Previous = Request.Continuation;
+			if (!TestTrue(TEXT("A continued native request is admitted"), Provider.StartRequest(Request,
+				MakeShared<FNativeFixtureAccess, ESPMode::ThreadSafe>(), Sink, Cancellation.GetToken(), Handle, Error)))
+			{
+				AddError(Error.Code.ToString());
+				return false;
+			}
+			if (Previous.IsValid())
+			{
+				TestFalse(TEXT("Admission consumes the preceding continuation exactly once"), Previous->IsValid());
+			}
+			const auto &Bytes = Transport->Attempts[Turn].BodyUtf8;
+			const FUTF8ToTCHAR Decoded(reinterpret_cast<const ANSICHAR *>(Bytes.GetData()), Bytes.Num());
+			TSharedPtr<FJsonObject> Body;
+			if (!TestTrue(TEXT("Recorded wire request is JSON"), FJsonSerializer::Deserialize(
+				TJsonReaderFactory<>::Create(FString(Decoded.Length(), Decoded.Get())), Body)))
+			{
+				return false;
+			}
+			const auto &Input = Body->GetArrayField(TEXT("input"));
+			if (!TestEqual(TEXT("Original message plus every preceding exchange exactly once"), Input.Num(), 1 + 3 * Turn))
+			{
+				return false;
+			}
+			TestEqual(TEXT("Original message is retained once"), Input[0]->AsObject()->GetStringField(TEXT("content")), Part.Text);
+			for (int32 Prior = 0; Prior < Turn; ++Prior)
+			{
+				TestEqual(TEXT("Opaque reasoning is preserved"),
+					Input[1 + 3 * Prior]->AsObject()->GetStringField(TEXT("encrypted_content")),
+					FString::Printf(TEXT("opaque_fixture_%d"), Prior));
+				TestEqual(TEXT("Prior function identity is preserved"),
+					Input[2 + 3 * Prior]->AsObject()->GetStringField(TEXT("call_id")),
+					FString::Printf(TEXT("call_%d"), Prior));
+				TestEqual(TEXT("Prior tool result is preserved"),
+					Input[3 + 3 * Prior]->AsObject()->GetStringField(TEXT("output")),
+					FString::Printf(TEXT("{\"step\":%d}"), Prior));
+			}
+			const FString Reasoning = FString::Printf(
+				TEXT("{\"type\":\"reasoning\",\"id\":\"rs_%d\",\"summary\":[],\"encrypted_content\":\"opaque_fixture_%d\"}"), Turn, Turn);
+			const FString Function = FString::Printf(
+				TEXT("{\"type\":\"function_call\",\"id\":\"fc_%d\",\"call_id\":\"call_%d\",\"name\":\"echo_v1\",\"arguments\":\"{}\"}"), Turn, Turn);
+			FString Stream = FString::Printf(
+				TEXT("data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_%d\"}}\n\n"), Turn);
+			Stream += TEXT("data: {\"type\":\"response.output_item.done\",\"sequence_number\":1,\"output_index\":0,\"item\":") + Reasoning + TEXT("}\n\n");
+			Stream += TEXT("data: {\"type\":\"response.output_item.done\",\"sequence_number\":2,\"output_index\":1,\"item\":") + Function + TEXT("}\n\n");
+			const FString Output = bMetadataOnly ? TEXT("[]") : TEXT("[") + Reasoning + TEXT(",") + Function + TEXT("]");
+			Stream += FString::Printf(TEXT("data: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_%d\",\"output\":"), Turn) + Output +
+				TEXT(",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n");
+			Transport->Respond(Turn, 200, TEXT("text/event-stream"), Stream);
+			if (!TestTrue(TEXT("The response retains a new continuation"),
+				!Sink->Events.IsEmpty() && Sink->Events.Last().Kind == EUnrealAIModelEventKind::Completed &&
+				Sink->Events.Last().Continuation.IsValid()))
+			{
+				return false;
+			}
+			Request.Continuation = Sink->Events.Last().Continuation;
+			Request.ToolOutputs.Reset();
+			FUnrealAIModelToolOutput ToolOutput;
+			ToolOutput.ProviderCallId = FString::Printf(TEXT("call_%d"), Turn);
+			ToolOutput.OutputJson = FString::Printf(TEXT("{\"step\":%d}"), Turn);
+			Request.ToolOutputs.Add(ToolOutput);
+		}
+	}
 	return true;
 }
 #endif

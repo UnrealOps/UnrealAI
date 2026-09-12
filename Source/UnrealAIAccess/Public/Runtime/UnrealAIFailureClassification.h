@@ -11,5 +11,7 @@ constexpr int32 MaximumErrorBodyBytes = 64 * 1024;
 
 UNREALAIACCESS_API bool IsPermanentQuotaCode(const FString &Code);
 UNREALAIACCESS_API bool IsPermanentQuotaResponse(TConstArrayView<uint8> Body);
+/** Returns only an SDK-authored description of recognized failures; unknown/free-form content is discarded. */
+UNREALAIACCESS_API FString GetPublicHttpFailureSummary(TConstArrayView<uint8> Body);
 UNREALAIACCESS_API bool IsRetryableHttpStatus(int32 Status);
 } // namespace UE::UnrealAI::Reliability

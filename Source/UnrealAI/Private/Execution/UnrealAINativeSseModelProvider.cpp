@@ -173,6 +173,7 @@ class FNativeSseRequestOperation final : public IUnrealAIHttpEventSink,
 		ParentCancellation = InCancellation;
 		MapPublicError = Config.MapPublicError;
 		MaximumPendingHttpEvents = Config.MaximumPendingHttpEvents;
+		bAllowMissingResponseContentType = Config.bAllowMissingResponseContentType;
 		UnauthorizedErrorCode = Config.UnauthorizedErrorCode;
 		ForbiddenErrorCode = Config.ForbiddenErrorCode;
 		Decoder = Protocol->CreateDecoder(
@@ -553,7 +554,8 @@ class FNativeSseRequestOperation final : public IUnrealAIHttpEventSink,
 				bRejectedHttpResponse = true;
 				return;
 			}
-			if (!Response.ContentType.StartsWith(TEXT("text/event-stream"), ESearchCase::IgnoreCase))
+			if (!Response.ContentType.StartsWith(TEXT("text/event-stream"), ESearchCase::IgnoreCase) &&
+				!(bAllowMissingResponseContentType && Response.ContentType.IsEmpty()))
 			{
 				bRejectedHttpResponse = true;
 				EmitTerminalLocked(
@@ -623,6 +625,8 @@ class FNativeSseRequestOperation final : public IUnrealAIHttpEventSink,
 			{
 				const bool bPermanentQuota = Response.StatusCode == 429 && !bRejectedResponseBodyOverflow &&
 											 UE::UnrealAI::Reliability::IsPermanentQuotaResponse(RejectedResponseBody);
+				const FString PublicDetail = bRejectedResponseBodyOverflow ? FString() :
+					UE::UnrealAI::Reliability::GetPublicHttpFailureSummary(RejectedResponseBody);
 				RejectedResponseBody.Empty();
 				EUnrealAIErrorCategory Category = EUnrealAIErrorCategory::Provider;
 				if (Response.StatusCode == 401)
@@ -658,6 +662,10 @@ class FNativeSseRequestOperation final : public IUnrealAIHttpEventSink,
 				Error.RetryAfterSeconds = bPermanentQuota ? 0.0f : Response.RetryAfterSeconds;
 				Error.ProviderRequestId = Response.ProviderRequestId;
 				Error.Metadata.Add(TEXT("http_status"), FString::FromInt(Response.StatusCode));
+				// The numeric status is content-free and remains useful after a consumer redacts internal metadata.
+				Error.UserMessage = FText::FromString(FString::Printf(
+					TEXT("The model provider returned HTTP %d."), Response.StatusCode) +
+					(PublicDetail.IsEmpty() ? FString() : TEXT(" ") + PublicDetail));
 				EmitTerminalLocked(EUnrealAIModelEventKind::Failed, MoveTemp(Error), false);
 				return;
 			}
@@ -905,6 +913,7 @@ class FNativeSseRequestOperation final : public IUnrealAIHttpEventSink,
 	bool bStartedForwarded = false;
 	bool bResponseStarted = false;
 	bool bRejectedHttpResponse = false;
+	bool bAllowMissingResponseContentType = false;
 	bool bDraining = false;
 	bool bHttpAdmissionCommitted = false;
 	bool bHttpAdmissionPublished = false;
