@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/UnrealOps/UnrealAI/compare/v0.7.2...v0.7.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* **openai:** support subscription gameplay tool loops ([032a103](https://github.com/UnrealOps/UnrealAI/commit/032a1033d1f8580058c1c3f25e7fb4de5d5f8cf3))
+
 ## [0.7.2](https://github.com/UnrealOps/UnrealAI/compare/v0.7.1...v0.7.2) (2026-09-07)
 
 
