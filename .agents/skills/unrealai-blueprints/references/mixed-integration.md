@@ -24,6 +24,8 @@ Store a reference to the native owner and bind custom events with matching signa
 
 For a dedicated server, keep the native owner in authoritative server code. Client UI calls a validated game RPC; the server returns only authorized, sanitized response state. Do not replicate full conversation history unless every message is safe for that client.
 
+When the native owner uses the model-provider SPI, display its sanitized `FUnrealAIModelError::UserMessage` on failure. Native HTTP failures include a numeric status and may include a recognized SDK-authored explanation. Keep raw response bodies, private diagnostic metadata, and credentials out of Blueprint UI. Endpoint-specific wire options belong to the native provider configuration, not the widget graph.
+
 ## Blueprint owns state; C++ supplies helpers
 
 Choose this boundary when designers must own the request graph:

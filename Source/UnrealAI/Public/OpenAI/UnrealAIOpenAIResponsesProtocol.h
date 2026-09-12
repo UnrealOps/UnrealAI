@@ -79,6 +79,12 @@ class UNREALAI_API FUnrealAIOpenAIResponsesRequestBuilder final
 								 FUnrealAIOpenAIResponsesWireRequest &OutWireRequest,
 								 FUnrealAIOpenAIResponsesContinuationCommit &OutContinuationCommit,
 								 FUnrealAIModelError &OutError);
+	/** Explicit endpoint wire policy; the ordinary overload always sends the output-token limit. */
+	static bool StageForProvider(FName ProviderName, const FUnrealAIOpenAIResponsesPublicFaultPolicy &FaultPolicy,
+								 const FUnrealAIModelRequest &Request,
+								 FUnrealAIOpenAIResponsesWireRequest &OutWireRequest,
+								 FUnrealAIOpenAIResponsesContinuationCommit &OutContinuationCommit,
+								 FUnrealAIModelError &OutError, bool bSendMaxOutputTokens);
 };
 
 /**
@@ -107,6 +113,11 @@ class UNREALAI_API FUnrealAIOpenAIResponsesStreamDecoder final
 										  const FUnrealAIModelRequest &Request, FEventSink InSink,
 										  FIgnoredEventObserver InIgnoredEventObserver = {});
 	~FUnrealAIOpenAIResponsesStreamDecoder();
+	/** Endpoint-specific metadata-only completion policy; existing overloads retain strict reconciliation. */
+	FUnrealAIOpenAIResponsesStreamDecoder(FName ProviderName,
+		const FUnrealAIOpenAIResponsesPublicFaultPolicy &FaultPolicy,
+		const FUnrealAIModelRequest &Request, FEventSink InSink,
+		FIgnoredEventObserver InIgnoredEventObserver, bool bAllowEmptyTerminalOutput);
 
 	FUnrealAIOpenAIResponsesStreamDecoder(const FUnrealAIOpenAIResponsesStreamDecoder &) = delete;
 	FUnrealAIOpenAIResponsesStreamDecoder &operator=(const FUnrealAIOpenAIResponsesStreamDecoder &) = delete;

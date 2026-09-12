@@ -1,6 +1,7 @@
 // Copyright UnrealOps. All Rights Reserved.
 
 #include "OpenAI/UnrealAIOpenAIResponsesProtocol.h"
+#include "OpenAI/UnrealAIOpenAIToolSchema.h"
 
 #include "HAL/CriticalSection.h"
 #include "Misc/Base64.h"
@@ -378,7 +379,7 @@ class FUnrealAIOpenAIContinuation final : public IUnrealAIModelContinuation
 
 	static TSharedPtr<const FUnrealAIOpenAIContinuation, ESPMode::ThreadSafe>
 	Create(const FUnrealAIModelContinuationBinding &InBinding, const TArray<TSharedPtr<FJsonValue>> &OutputItems,
-		   TArray<uint8> &&InOriginalHistory)
+		   TArray<uint8> &&InOriginalHistory, const TArray<uint8> &PriorReplayHistory)
 	{
 		FString Error;
 		if (!InBinding.ValidateShape(Error) || OutputItems.IsEmpty() || InOriginalHistory.IsEmpty() ||
@@ -386,8 +387,21 @@ class FUnrealAIOpenAIContinuation final : public IUnrealAIModelContinuation
 		{
 			return nullptr;
 		}
+		TArray<TSharedPtr<FJsonValue>> ReplayItems;
+		if (!PriorReplayHistory.IsEmpty())
+		{
+			TSharedPtr<FJsonObject> Prior;
+			const TArray<TSharedPtr<FJsonValue>> *PriorItems = nullptr;
+			if (!ParseJsonObjectUtf8(PriorReplayHistory, MaxContinuationBytes, Prior) ||
+				!Prior->TryGetArrayField(TEXT("output"), PriorItems) || !PriorItems)
+			{
+				return nullptr;
+			}
+			ReplayItems = *PriorItems;
+		}
+		ReplayItems.Append(OutputItems);
 		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-		Root->SetArrayField(TEXT("output"), OutputItems);
+		Root->SetArrayField(TEXT("output"), ReplayItems);
 		FString Json;
 		if (!SerializeJsonObject(Root, Json))
 		{
@@ -602,6 +616,50 @@ bool AppendContinuation(const FName ProviderName, const FUnrealAIModelRequest &R
 	return true;
 }
 
+void AppendToolOutputs(const FUnrealAIModelRequest &Request, TArray<TSharedPtr<FJsonValue>> &Input)
+{
+	for (const FUnrealAIModelToolOutput &Output : Request.ToolOutputs)
+	{
+		TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+		Object->SetStringField(TEXT("type"), TEXT("function_call_output"));
+		Object->SetStringField(TEXT("call_id"), Output.ProviderCallId);
+		Object->SetStringField(TEXT("output"), Output.OutputJson);
+		Input.Add(MakeShared<FJsonValueObject>(Object));
+	}
+}
+
+bool BuildReplayHistory(const FName ProviderName, const FUnrealAIModelRequest &Request, TArray<uint8> &OutHistory)
+{
+	SecureZero(OutHistory);
+	TArray<TSharedPtr<FJsonValue>> Input;
+	TSharedPtr<const IUnrealAIModelContinuation, ESPMode::ThreadSafe> Continuation;
+	FUnrealAIModelContinuationBinding Binding;
+	FUnrealAIModelError Error;
+	if (!AppendContinuation(ProviderName, Request, Input, Continuation, Binding, Error))
+	{
+		return false;
+	}
+	AppendToolOutputs(Request, Input);
+	if (Input.IsEmpty())
+	{
+		return true;
+	}
+	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetArrayField(TEXT("output"), Input);
+	FString Json;
+	if (!SerializeJsonObject(Root, Json))
+	{
+		return false;
+	}
+	const FTCHARToUTF8 Utf8(*Json);
+	if (Utf8.Length() <= 0 || Utf8.Length() > MaxContinuationBytes)
+	{
+		return false;
+	}
+	OutHistory.Append(reinterpret_cast<const uint8 *>(Utf8.Get()), Utf8.Length());
+	return true;
+}
+
 bool ReadNonNegativeInteger(const TSharedPtr<FJsonObject> &Object, const TCHAR *Field, int64 &OutValue,
 							const int64 Maximum = FUnrealAIModelUsageSnapshot::MaxTokenCount)
 {
@@ -776,6 +834,15 @@ bool FUnrealAIOpenAIResponsesRequestBuilder::StageForProvider(
 	const FUnrealAIModelRequest &Request, FUnrealAIOpenAIResponsesWireRequest &OutWireRequest,
 	FUnrealAIOpenAIResponsesContinuationCommit &OutContinuationCommit, FUnrealAIModelError &OutError)
 {
+	return StageForProvider(ProviderName, FaultPolicy, Request, OutWireRequest, OutContinuationCommit, OutError, true);
+}
+
+bool FUnrealAIOpenAIResponsesRequestBuilder::StageForProvider(
+	const FName ProviderName, const FUnrealAIOpenAIResponsesPublicFaultPolicy &FaultPolicy,
+	const FUnrealAIModelRequest &Request, FUnrealAIOpenAIResponsesWireRequest &OutWireRequest,
+	FUnrealAIOpenAIResponsesContinuationCommit &OutContinuationCommit, FUnrealAIModelError &OutError,
+	const bool bSendMaxOutputTokens)
+{
 	OutWireRequest.BodyUtf8.Reset();
 	OutContinuationCommit.Reset();
 	OutError = {};
@@ -819,20 +886,15 @@ bool FUnrealAIOpenAIResponsesRequestBuilder::StageForProvider(
 	}
 	OutContinuationCommit.Continuation = MoveTemp(StagedContinuation);
 	OutContinuationCommit.Binding = MoveTemp(StagedBinding);
-	for (const FUnrealAIModelToolOutput &Output : Request.ToolOutputs)
-	{
-		TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-		Object->SetStringField(TEXT("type"), TEXT("function_call_output"));
-		Object->SetStringField(TEXT("call_id"), Output.ProviderCallId);
-		Object->SetStringField(TEXT("output"), Output.OutputJson);
-		Input.Add(MakeShared<FJsonValueObject>(Object));
-	}
+	AppendToolOutputs(Request, Input);
 
 	TArray<TSharedPtr<FJsonValue>> Tools;
 	for (const FUnrealAIModelToolDescriptor &Tool : Request.Tools)
 	{
 		TSharedPtr<FJsonObject> Parameters;
-		if (!ParseJsonObject(Tool.InputJsonSchema, FUnrealAIModelToolDescriptor::MaxSchemaUtf8Bytes, Parameters))
+		bool bOptionalProjection = false;
+		if (!ParseJsonObject(Tool.InputJsonSchema, FUnrealAIModelToolDescriptor::MaxSchemaUtf8Bytes, Parameters) ||
+			!UE::UnrealAI::OpenAI::Private::ProjectToolSchema(Parameters.ToSharedRef(), Tool.bStrict, bOptionalProjection))
 		{
 			OutContinuationCommit.Reset();
 			OutError = MakeOpenAIError(EUnrealAIErrorCategory::SchemaValidation,
@@ -886,7 +948,10 @@ bool FUnrealAIOpenAIResponsesRequestBuilder::StageForProvider(
 	}
 	Body->SetBoolField(TEXT("stream"), true);
 	Body->SetBoolField(TEXT("store"), Request.bAllowProviderStorage);
-	Body->SetNumberField(TEXT("max_output_tokens"), Request.MaxOutputTokens);
+	if (bSendMaxOutputTokens)
+	{
+		Body->SetNumberField(TEXT("max_output_tokens"), Request.MaxOutputTokens);
+	}
 	if (!Request.bAllowProviderStorage)
 	{
 		TArray<TSharedPtr<FJsonValue>> Include;
@@ -922,14 +987,18 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 {
   public:
 	FImpl(const FName InProviderName, const FUnrealAIOpenAIResponsesPublicFaultPolicy &InFaultPolicy,
-		  const FUnrealAIModelRequest &InRequest, FEventSink InSink, FIgnoredEventObserver InIgnoredEventObserver)
+		  const FUnrealAIModelRequest &InRequest, FEventSink InSink, FIgnoredEventObserver InIgnoredEventObserver,
+		  const bool bInAllowEmptyTerminalOutput = false)
 		: ProviderName(InProviderName), FaultPolicy(InFaultPolicy), RequestId(InRequest.RequestId),
 		  ConnectionBinding(InRequest.ConnectionBinding), ConnectionAlias(InRequest.ConnectionAlias),
 		  ModelId(InRequest.ModelId), Sink(MoveTemp(InSink)), IgnoredEventObserver(MoveTemp(InIgnoredEventObserver)),
-		  bStructuredOutput(InRequest.OutputContract.IsSet())
+		  bStructuredOutput(InRequest.OutputContract.IsSet()), bAllowEmptyTerminalOutput(bInAllowEmptyTerminalOutput)
 	{
 		FUnrealAIModelError HistoryError;
-		bOriginalHistoryValid = BuildCanonicalRequestHistory(InRequest, OriginalHistory, HistoryError);
+		// Snapshot before the staged continuation is consumed by physical request admission.
+		bOriginalHistoryValid = BuildCanonicalRequestHistory(InRequest, OriginalHistory, HistoryError) &&
+			BuildReplayHistory(InProviderName, InRequest, ReplayHistory);
+		RetainedResponseStateBytes += ReplayHistory.GetAllocatedSize();
 		for (const FUnrealAIModelToolDescriptor &Tool : InRequest.Tools)
 		{
 			Tools.Add(Tool.InvocationName, Tool);
@@ -939,6 +1008,7 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 	~FImpl()
 	{
 		SecureZero(OriginalHistory);
+		SecureZero(ReplayHistory);
 	}
 
 	bool Push(const TConstArrayView<uint8> Bytes, FString &OutError)
@@ -1059,6 +1129,9 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 		int32 Version = 0;
 		FString Arguments;
 		FString FinalArguments;
+		// Tools is frozen for the decoder lifetime; no duplicate schema allocation is retained here.
+		const FUnrealAIModelToolDescriptor *Descriptor = nullptr;
+		bool bNormalizeOptionalNulls = false;
 		bool bCompleted = false;
 	};
 
@@ -1663,9 +1736,15 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 			{
 				return false;
 			}
+			FString Reason;
+			const TSharedPtr<FJsonObject> *Details = nullptr;
+			if (bHasResponse && (*Response)->TryGetObjectField(TEXT("incomplete_details"), Details) && Details && Details->IsValid())
+			{
+				(*Details)->TryGetStringField(TEXT("reason"), Reason);
+			}
 			return ProviderFailure(Type == TEXT("response.incomplete")
 								   ? TEXT("openai_response_incomplete")
-								   : TEXT("openai_response_failed"), Type == TEXT("response.incomplete"), OutError);
+								   : TEXT("openai_response_failed"), Type == TEXT("response.incomplete"), OutError, Reason);
 		}
 		// Unknown provider events are intentionally tolerated after bounded JSON,
 		// type, and sequence validation. The observer receives no untrusted data.
@@ -1690,8 +1769,13 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 		TArray<TSharedPtr<FJsonValue>> Items;
 		TArray<int32> ItemIndices;
 		const TArray<TSharedPtr<FJsonValue>> *ResponseItems = nullptr;
-		const bool bHasTerminalOutput =
+		bool bHasTerminalOutput =
 			Response->TryGetArrayField(TEXT("output"), ResponseItems) && ResponseItems != nullptr;
+		if (bAllowEmptyTerminalOutput && bHasTerminalOutput && ResponseItems->IsEmpty() && !OutputItems.IsEmpty())
+		{
+			// This endpoint's terminal carries usage only. Require the full output_item.done records below.
+			bHasTerminalOutput = false;
+		}
 		if (bHasTerminalOutput)
 		{
 			if (ResponseItems->Num() > FUnrealAIOpenAIResponsesStreamDecoder::MaxRetainedOutputItems)
@@ -1963,7 +2047,13 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 			Binding.ConnectionBinding = ConnectionBinding;
 			if (bOriginalHistoryValid)
 			{
-				Continuation = FUnrealAIOpenAIContinuation::Create(Binding, Items, MoveTemp(OriginalHistory));
+				int64 ReplayDomBytes = 0;
+				if (!ReplayHistory.IsEmpty() && (!TryMeasureRetainedJsonDom(ReplayHistory.Num(), ReplayDomBytes) ||
+					!ConsumeRetainedResponseStateBytes(ReplayDomBytes, OutError)))
+				{
+					return false;
+				}
+				Continuation = FUnrealAIOpenAIContinuation::Create(Binding, Items, MoveTemp(OriginalHistory), ReplayHistory);
 			}
 			if (!Continuation.IsValid())
 			{
@@ -2260,6 +2350,15 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 		Assembly.CallId = CallId;
 		Assembly.StableName = Tool.StableName;
 		Assembly.Version = Tool.Version;
+		Assembly.Descriptor = &Tool;
+		TSharedPtr<FJsonObject> Schema;
+		if (!ParseJsonObject(Tool.InputJsonSchema, FUnrealAIModelToolDescriptor::MaxSchemaUtf8Bytes, Schema) ||
+			!UE::UnrealAI::OpenAI::Private::ProjectToolSchema(Schema.ToSharedRef(), Tool.bStrict,
+				Assembly.bNormalizeOptionalNulls))
+		{
+			return ProtocolFailure(TEXT("openai_tool_schema_invalid"), TEXT("A tool schema is invalid."),
+				TEXT("The admitted tool schema could not be projected."), OutError);
+		}
 		const int32 NormalizedToolOutputIndex = Assembly.NormalizedToolOutputIndex;
 		ToolAssembliesByProviderOutputIndex.Add(OutputIndex, MoveTemp(Assembly));
 		ProviderToolOutputIndicesByItemId.Add(ItemId, OutputIndex);
@@ -2313,6 +2412,11 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 		}
 		Assembly->Arguments += Delta;
 		AggregateToolArgumentBytes += DeltaBytes;
+		if (Assembly->bNormalizeOptionalNulls)
+		{
+			// Only complete normalized arguments are published for schemas with synthetic optional nulls.
+			return true;
+		}
 
 		FUnrealAIModelEvent DeltaEvent;
 		PopulateEnvelope(DeltaEvent);
@@ -2429,6 +2533,22 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 			AggregateToolArgumentBytes += ArgumentBytes;
 		}
 
+		if (Assembly.bNormalizeOptionalNulls)
+		{
+			TSharedPtr<FJsonObject> Schema;
+			TSharedPtr<FJsonObject> Object;
+			if (!Assembly.Descriptor ||
+				!ParseJsonObject(Assembly.Descriptor->InputJsonSchema,
+					FUnrealAIModelToolDescriptor::MaxSchemaUtf8Bytes, Schema) ||
+				!ParseJsonObject(Arguments, FUnrealAIModelToolCall::MaxArgumentsJsonUtf8Bytes, Object) ||
+				!UE::UnrealAI::OpenAI::Private::NormalizeToolArguments(Schema.ToSharedRef(), Object.ToSharedRef()) ||
+				!SerializeJsonObject(Object.ToSharedRef(), Call.ArgumentsJson) || !Call.ValidateShape(ShapeError))
+			{
+				return ProtocolFailure(TEXT("openai_function_arguments_invalid"),
+					TEXT("The provider returned invalid tool arguments."),
+					TEXT("Optional tool argument projection failed bounded validation."), OutError);
+			}
+		}
 		Assembly.bCompleted = true;
 		Assembly.FinalArguments = Arguments;
 		++CompletedToolCalls;
@@ -2469,12 +2589,21 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 		Sink(MoveTemp(Event));
 	}
 
-	bool ProviderFailure(const FName Code, const bool bRetryable, FString &OutError)
+	bool ProviderFailure(const FName Code, const bool bRetryable, FString &OutError, const FString &Reason)
 	{
 		FUnrealAIModelError PublicError =
 			MakeOpenAIError(EUnrealAIErrorCategory::Provider, Code,
 							TEXT("The model provider could not complete the request."),
 								 TEXT("OpenAI Responses emitted a terminal failure event."), bRetryable);
+		if (Reason == TEXT("max_output_tokens"))
+		{
+			PublicError.UserMessage = FText::FromString(TEXT("The provider reached its output-token limit before completing the response."));
+		}
+		else if (Reason == TEXT("content_filter"))
+		{
+			PublicError.UserMessage = FText::FromString(TEXT("The provider stopped the response because of its content filter."));
+			PublicError.bRetryable = false;
+		}
 		FaultPolicy.ApplyTo(PublicError);
 		OutError = PublicError.DiagnosticMessage;
 		if (!bTerminal)
@@ -2523,6 +2652,7 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 	FEventSink Sink;
 	FIgnoredEventObserver IgnoredEventObserver;
 	TArray<uint8> OriginalHistory;
+	TArray<uint8> ReplayHistory;
 	TArray<uint8> CurrentLine;
 	TArray<uint8> Data;
 	TMap<int32, TSharedPtr<FJsonValue>> OutputItems;
@@ -2551,6 +2681,7 @@ class FUnrealAIOpenAIResponsesStreamDecoder::FImpl final
 	bool bFailed = false;
 	bool bOriginalHistoryValid = false;
 	bool bStructuredOutput = false;
+	bool bAllowEmptyTerminalOutput = false;
 };
 
 FUnrealAIOpenAIResponsesStreamDecoder::FUnrealAIOpenAIResponsesStreamDecoder(
@@ -2568,6 +2699,15 @@ FUnrealAIOpenAIResponsesStreamDecoder::FUnrealAIOpenAIResponsesStreamDecoder(
 }
 
 FUnrealAIOpenAIResponsesStreamDecoder::~FUnrealAIOpenAIResponsesStreamDecoder() = default;
+
+FUnrealAIOpenAIResponsesStreamDecoder::FUnrealAIOpenAIResponsesStreamDecoder(
+	const FName ProviderName, const FUnrealAIOpenAIResponsesPublicFaultPolicy &FaultPolicy,
+	const FUnrealAIModelRequest &Request, FEventSink InSink, FIgnoredEventObserver InIgnoredEventObserver,
+	const bool bAllowEmptyTerminalOutput)
+	: Impl(MakeUnique<FImpl>(ProviderName, FaultPolicy, Request, MoveTemp(InSink), MoveTemp(InIgnoredEventObserver),
+		bAllowEmptyTerminalOutput))
+{
+}
 
 bool FUnrealAIOpenAIResponsesStreamDecoder::PushBytes(const TConstArrayView<uint8> Bytes, FString &OutError)
 {
